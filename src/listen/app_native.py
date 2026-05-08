@@ -161,7 +161,7 @@ class AppDelegate(NSObject):
         bar = NSStatusBar.systemStatusBar()
         self.status_item = bar.statusItemWithLength_(80)
         btn = self.status_item.button()
-        btn.setTitle_("Listen")
+        btn.setTitle_("voice")
         btn.setFont_(NSFont.systemFontOfSize_(12))
 
         menu = NSMenu.alloc().init()
@@ -188,7 +188,7 @@ class AppDelegate(NSObject):
         s = self.settings
         self.stt_item.setTitle_(f"STT: {s.get('stt_provider', 'elevenlabs')}")
         self.interp_item.setTitle_(f"Interpreter: {s.get('interpreter_provider', 'openrouter')}")
-        self.status_item.button().setTitle_("Listen")
+        self.status_item.button().setTitle_("voice")
 
     # ── Providers ──────────────────────────────────────────
 
@@ -237,13 +237,13 @@ class AppDelegate(NSObject):
         self.recording = True
         self.record_start_time = time.time()
         self.current_mode = detect_mode()
-        self.status_item.button().setTitle_("Recording")
+        self.status_item.button().setTitle_("recording")
         try:
             self.recorder.start()
         except Exception as e:
             log(f"recorder.start() failed: {e}")
             self.recording = False
-            self.status_item.button().setTitle_("Listen")
+            self.status_item.button().setTitle_("voice")
             notify("Listen", f"Recording failed: {e}")
 
     def on_release(self):
@@ -257,7 +257,7 @@ class AppDelegate(NSObject):
             self._do_process()
         except Exception as e:
             log(f"process error: {e}")
-            self.status_item.button().setTitle_("Listen")
+            self.status_item.button().setTitle_("voice")
 
     def _do_process(self):
         t0 = time.perf_counter()
@@ -266,11 +266,11 @@ class AppDelegate(NSObject):
             path = self.recorder.stop()
         except Exception as e:
             log(f"recorder.stop() failed: {e}")
-            self.status_item.button().setTitle_("Listen")
+            self.status_item.button().setTitle_("voice")
             return
 
         sounds.stop()
-        self.status_item.button().setTitle_("Processing...")
+        self.status_item.button().setTitle_("thinking...")
 
         self.current_mode = detect_mode()
 
@@ -281,7 +281,7 @@ class AppDelegate(NSObject):
             log(f"transcribed in {(t2-t1)*1000:.0f}ms: {text[:60]}...")
         except Exception as e:
             log(f"transcription failed: {e}")
-            self.status_item.button().setTitle_("Listen")
+            self.status_item.button().setTitle_("voice")
             return
 
         if self.interpreter and text:
@@ -316,7 +316,7 @@ class AppDelegate(NSObject):
                 pass
 
         total = (time.perf_counter() - t0) * 1000
-        self.status_item.button().setTitle_("Listen")
+        self.status_item.button().setTitle_("voice")
         log(f"done — total after release: {total:.0f}ms")
 
     # ── Menu Actions ───────────────────────────────────────
