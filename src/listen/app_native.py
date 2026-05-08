@@ -1,7 +1,6 @@
 """Listen — Fast voice-to-text for macOS.
 
-Floating pill (primary visible UI) + menubar (menu access).
-Menubar is invisible on some Macs, so the pill guarantees visibility.
+Menubar-only via rumps. Zero pill. Zero emoji. Plain text only.
 """
 
 import os
@@ -13,26 +12,15 @@ from pathlib import Path
 from typing import Optional
 
 import objc
+import rumps
 from AppKit import (
     NSAlert,
     NSAlertFirstButtonReturn,
-    NSApplication,
-    NSBezierPath,
-    NSBox,
     NSColor,
     NSFont,
-    NSFontAttributeName,
-    NSForegroundColorAttributeName,
     NSMakeRect,
-    NSMenu,
-    NSMenuItem,
-    NSScreen,
     NSSecureTextField,
-    NSStatusBar,
-    NSString,
     NSTextField,
-    NSUserNotification,
-    NSUserNotificationCenter,
     NSView,
     NSWindow,
     NSButton,
@@ -67,10 +55,7 @@ def log(msg: str) -> None:
 
 def notify(title: str, subtitle: str) -> None:
     try:
-        n = NSUserNotification.alloc().init()
-        n.setTitle_(title)
-        n.setInformativeText_(subtitle)
-        NSUserNotificationCenter.defaultUserNotificationCenter().deliverNotification_(n)
+        rumps.notification(title, "", subtitle)
     except Exception:
         pass
 
@@ -106,62 +91,34 @@ def detect_mode() -> str:
     return "default"
 
 
-NSFloatingWindowLevel = 3
-NSWindowCollectionBehaviorCanJoinAllSpaces = 1 << 0
-NSWindowCollectionBehaviorStationary = 1 << 4
+class _SectionView(NSView):
+    """Rounded card for preferences."""
 
-
-class _PillView(NSView):
-    """Minimal pill: plain text, no dots, no emoji."""
-
-    def initWithFrame_(self, frame):
-        self = objc.super(_PillView, self).initWithFrame_(frame)
+    def initWithFrame_title_(self, frame, title):
+        self = objc.super(_SectionView, self).initWithFrame_(frame)
         if self is None:
             return None
-        self.label_text = "voice"
-        self.recording = False
         self.setWantsLayer_(True)
+        self.layer().setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(0.12, 1.0).CGColor())
+        self.layer().setCornerRadius_(10.0)
+        self.layer().setBorderWidth_(0.5)
+        self.layer().setBorderColor_(NSColor.colorWithCalibratedWhite_alpha_(0.25, 1.0).CGColor())
+
+        lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(16, frame.size.height - 30, 200, 20))
+        lbl.setStringValue_(title)
+        lbl.setEditable_(False)
+        lbl.setBordered_(False)
+        lbl.setBackgroundColor_(NSColor.clearColor())
+        lbl.setTextColor_(NSColor.whiteColor())
+        lbl.setFont_(NSFont.boldSystemFontOfSize_(11))
+        self.addSubview_(lbl)
         return self
 
-    def drawRect_(self, rect):
-        bounds = self.bounds()
-        path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-            bounds, 14.0, 14.0
-        )
 
-        if self.recording:
-            NSColor.colorWithCalibratedWhite_alpha_(0.22, 0.95).setFill()
-        else:
-            NSColor.colorWithCalibratedWhite_alpha_(0.15, 0.92).setFill()
-        path.fill()
+class ListenApp(rumps.App):
 
-        if self.recording:
-            text_color = NSColor.colorWithCalibratedRed_green_blue_alpha_(
-                1.0, 0.75, 0.35, 1.0
-            )
-        else:
-            text_color = NSColor.whiteColor()
-
-        attrs = {
-            NSFontAttributeName: NSFont.systemFontOfSize_(13),
-            NSForegroundColorAttributeName: text_color,
-        }
-        text = NSString.stringWithString_(self.label_text)
-        text.drawAtPoint_withAttributes_((14, bounds.size.height / 2 - 8), attrs)
-
-    def rightMouseDown_(self, event):
-        if hasattr(self, "delegate") and self.delegate:
-            self.delegate.showContextMenu_(event)
-
-
-# ── App Delegate ─────────────────────────────────────────
-
-class AppDelegate(NSObject):
-
-    def init(self):
-        self = objc.super(AppDelegate, self).init()
-        if self is None:
-            return None
+    def __init__(self):
+        super().__init__("Listen", quit_button=None)
 
         self.recorder = AudioRecorder()
         self.hotkey: Optional[HotkeyListener] = None
@@ -171,120 +128,38 @@ class AppDelegate(NSObject):
         self.stt = None
         self.interpreter = None
         self.current_mode = "default"
-        self.status_item = None
-
-        self._window: Optional[NSWindow] = None
-        self._pill_view: Optional[_PillView] = None
 
         self.init_providers()
         sounds.set_enabled(self.settings.get("sound_enabled", False))
         self.start_hotkey()
-        return self
-
-    def applicationDidFinishLaunching_(self, notification):
         self.build_menu()
-        self.build_pill()
-
-    # ── Pill ───────────────────────────────────────────────
-
-    def build_pill(self):
-        screens = NSScreen.screens()
-        screen = NSScreen.mainScreen() or (screens[0] if screens else None)
-        if screen is None:
-            return
-
-        frame = screen.visibleFrame()
-        w, h = 100, 28
-        x = frame.origin.x + frame.size.width - w - 16
-        y = frame.origin.y + frame.size.height - h - 8
-
-        self._window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(x, y, w, h),
-            0,
-            2,
-            False,
-        )
-        self._window.setLevel_(NSFloatingWindowLevel)
-        self._window.setBackgroundColor_(NSColor.clearColor())
-        self._window.setOpaque_(False)
-        self._window.setHasShadow_(True)
-        self._window.setCollectionBehavior_(
-            NSWindowCollectionBehaviorCanJoinAllSpaces
-            | NSWindowCollectionBehaviorStationary
-        )
-        self._window.setIgnoresMouseEvents_(False)
-
-        self._pill_view = _PillView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
-        self._pill_view.delegate = self
-        self._window.setContentView_(self._pill_view)
-        self._window.orderFront_(None)
-
-    def setPillLabel_(self, label):
-        try:
-            if self._pill_view:
-                self._pill_view.label_text = str(label)
-                self._pill_view.setNeedsDisplay_(True)
-        except Exception:
-            pass
-
-    def setPillRecording_(self, recording):
-        try:
-            if self._pill_view:
-                self._pill_view.recording = bool(recording)
-                self._pill_view.setNeedsDisplay_(True)
-        except Exception:
-            pass
-
-    def set_pill_label(self, label: str) -> None:
-        self.performSelectorOnMainThread_withObject_waitUntilDone_(
-            "setPillLabel_:", label, False,
-        )
-
-    def set_pill_recording(self, recording: bool) -> None:
-        self.performSelectorOnMainThread_withObject_waitUntilDone_(
-            "setPillRecording_:", recording, False,
-        )
-
-    # ── Menu ───────────────────────────────────────────────
 
     def build_menu(self):
-        bar = NSStatusBar.systemStatusBar()
-        self.status_item = bar.statusItemWithLength_(80)
-        btn = self.status_item.button()
-        btn.setTitle_("voice")
-        btn.setFont_(NSFont.systemFontOfSize_(12))
-
-        menu = NSMenu.alloc().init()
-        self.add_item(menu, "Record", "doRecord:")
-        menu.addItem_(NSMenuItem.separatorItem())
-        self.mode_item = self.add_item(menu, "Mode: auto", "cycleMode:")
-        self.stt_item = self.add_item(menu, "STT: elevenlabs", "chooseStt:")
-        self.interp_item = self.add_item(menu, "Interpreter: openrouter", "chooseInterpreter:")
-        menu.addItem_(NSMenuItem.separatorItem())
-        self.add_item(menu, "Toggle Cleanup", "toggleCleanup:")
-        menu.addItem_(NSMenuItem.separatorItem())
-        self.add_item(menu, "Preferences...", "showPreferences:")
-        self.add_item(menu, "Quit", "terminate:")
-        self.status_item.setMenu_(menu)
+        self.menu = [
+            rumps.MenuItem("Record", callback=self.do_record),
+            None,
+            rumps.MenuItem("Mode: auto", callback=self.cycle_mode),
+            rumps.MenuItem("STT: elevenlabs", callback=self.choose_stt),
+            rumps.MenuItem("Interpreter: openrouter", callback=self.choose_interp),
+            None,
+            rumps.MenuItem("Toggle Cleanup", callback=self.toggle_cleanup),
+            None,
+            rumps.MenuItem("Preferences...", callback=self.show_prefs),
+            rumps.MenuItem("Quit", callback=self.quit_app),
+        ]
         self.sync_titles()
-
-    def add_item(self, menu, title, action):
-        m = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, action, "")
-        m.setTarget_(self)
-        menu.addItem_(m)
-        return m
-
-    def showContextMenu_(self, event):
-        if self.status_item and self.status_item.menu():
-            NSMenu.popUpContextMenu_withEvent_forView_(
-                self.status_item.menu(), event, self._pill_view
-            )
 
     def sync_titles(self):
         s = self.settings
-        self.stt_item.setTitle_(f"STT: {s.get('stt_provider', 'elevenlabs')}")
-        self.interp_item.setTitle_(f"Interpreter: {s.get('interpreter_provider', 'openrouter')}")
-        self.status_item.button().setTitle_("voice")
+        for item in self.menu:
+            if item is None:
+                continue
+            if item.title.startswith("STT:"):
+                item.title = f"STT: {s.get('stt_provider', 'elevenlabs')}"
+            elif item.title.startswith("Interpreter:"):
+                item.title = f"Interpreter: {s.get('interpreter_provider', 'openrouter')}"
+            elif item.title.startswith("Mode:"):
+                item.title = f"Mode: {self.current_mode}"
 
     # ── Providers ──────────────────────────────────────────
 
@@ -333,17 +208,13 @@ class AppDelegate(NSObject):
         self.recording = True
         self.record_start_time = time.time()
         self.current_mode = detect_mode()
-        self.status_item.button().setTitle_("recording")
-        self.set_pill_label("recording")
-        self.set_pill_recording(True)
+        self.title = "Recording"
         try:
             self.recorder.start()
         except Exception as e:
             log(f"recorder.start() failed: {e}")
             self.recording = False
-            self.status_item.button().setTitle_("voice")
-            self.set_pill_label("voice")
-            self.set_pill_recording(False)
+            self.title = "Listen"
             notify("Listen", f"Recording failed: {e}")
 
     def on_release(self):
@@ -357,9 +228,7 @@ class AppDelegate(NSObject):
             self._do_process()
         except Exception as e:
             log(f"process error: {e}")
-            self.status_item.button().setTitle_("voice")
-            self.set_pill_label("voice")
-            self.set_pill_recording(False)
+            self.title = "Listen"
 
     def _do_process(self):
         t0 = time.perf_counter()
@@ -368,15 +237,11 @@ class AppDelegate(NSObject):
             path = self.recorder.stop()
         except Exception as e:
             log(f"recorder.stop() failed: {e}")
-            self.status_item.button().setTitle_("voice")
-            self.set_pill_label("voice")
-            self.set_pill_recording(False)
+            self.title = "Listen"
             return
 
         sounds.stop()
-        self.status_item.button().setTitle_("thinking...")
-        self.set_pill_label("thinking...")
-        self.set_pill_recording(False)
+        self.title = "Thinking..."
 
         self.current_mode = detect_mode()
 
@@ -387,8 +252,7 @@ class AppDelegate(NSObject):
             log(f"transcribed in {(t2-t1)*1000:.0f}ms: {text[:60]}...")
         except Exception as e:
             log(f"transcription failed: {e}")
-            self.status_item.button().setTitle_("voice")
-            self.set_pill_label("voice")
+            self.title = "Listen"
             return
 
         if self.interpreter and text:
@@ -423,13 +287,12 @@ class AppDelegate(NSObject):
                 pass
 
         total = (time.perf_counter() - t0) * 1000
-        self.status_item.button().setTitle_("voice")
-        self.set_pill_label("voice")
+        self.title = "Listen"
         log(f"done — total after release: {total:.0f}ms")
 
     # ── Menu Actions ───────────────────────────────────────
 
-    def doRecord_(self, sender):
+    def do_record(self, sender):
         if not self.stt:
             notify("Listen", "Set API keys in Preferences")
             return
@@ -437,14 +300,14 @@ class AppDelegate(NSObject):
         time.sleep(3)
         self.on_release()
 
-    def cycleMode_(self, sender):
+    def cycle_mode(self, sender):
         modes = list(APP_MODES.keys())
         idx = modes.index(self.current_mode) if self.current_mode in modes else 0
         self.current_mode = modes[(idx + 1) % len(modes)]
-        self.mode_item.setTitle_(f"Mode: {self.current_mode}")
+        self.sync_titles()
         notify("Listen", f"Mode: {self.current_mode}")
 
-    def chooseStt_(self, sender):
+    def choose_stt(self, sender):
         choices = ", ".join(registry.list_stt())
         choice = self._ask_text(f"Available: {choices}", "STT Provider", self.settings.get("stt_provider", "elevenlabs"))
         if choice and choice.strip() in registry.list_stt():
@@ -453,7 +316,7 @@ class AppDelegate(NSObject):
             self.init_providers()
             self.sync_titles()
 
-    def chooseInterpreter_(self, sender):
+    def choose_interp(self, sender):
         choices = ", ".join(registry.list_interpreters())
         choice = self._ask_text(f"Available: {choices}", "Interpreter", self.settings.get("interpreter_provider", "openrouter"))
         if choice and choice.strip() in registry.list_interpreters():
@@ -462,11 +325,16 @@ class AppDelegate(NSObject):
             self.init_providers()
             self.sync_titles()
 
-    def toggleCleanup_(self, sender):
+    def toggle_cleanup(self, sender):
         self.settings["cleanup_enabled"] = not self.settings.get("cleanup_enabled", True)
         save(self.settings)
         self.init_providers()
         notify("Listen", f"Cleanup {'on' if self.settings['cleanup_enabled'] else 'off'}")
+
+    def quit_app(self, sender):
+        if self.hotkey:
+            self.hotkey.stop()
+        rumps.quit_application()
 
     def _ask_text(self, message: str, title: str, default_text: str = "") -> Optional[str]:
         alert = NSAlert.alloc().init()
@@ -483,7 +351,7 @@ class AppDelegate(NSObject):
 
     # ── Preferences ────────────────────────────────────────
 
-    def showPreferences_(self, sender):
+    def show_prefs(self, sender):
         win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, 420, 520), 15, 2, False,
         )
@@ -497,11 +365,10 @@ class AppDelegate(NSObject):
         win.setContentView_(bg)
 
         y = 480
-        gap = 36
         fields = {}
 
         def sec(title, yv, h=100):
-            s = _PillView.alloc().initWithFrame_title_(NSMakeRect(20, yv, 380, h), title)
+            s = _SectionView.alloc().initWithFrame_title_(NSMakeRect(20, yv, 380, h), title)
             bg.addSubview_(s)
             return s
 
@@ -529,7 +396,7 @@ class AppDelegate(NSObject):
             parent.addSubview_(f)
             return f
 
-        # ── API Keys ──────────────────────────────────────
+        # API Keys
         s1 = sec("API Keys", y, h=210)
         lbl("OpenRouter", s1, 16, 140)
         fields["or"] = secure(self.settings.get("openrouter_api_key", ""), s1, 110, 138)
@@ -541,7 +408,7 @@ class AppDelegate(NSObject):
         fields["gq"] = secure(self.settings.get("groq_api_key", ""), s1, 110, 33)
         y -= 230
 
-        # ── Providers ─────────────────────────────────────
+        # Providers
         s2 = sec("Providers", y, h=130)
         lbl("STT", s2, 16, 90)
         fields["stt"] = plain(self.settings.get("stt_provider", "elevenlabs"), s2, 110, 88, w=120)
@@ -551,7 +418,7 @@ class AppDelegate(NSObject):
         fields["model"] = plain(self.settings.get("openrouter_model", "google/gemini-flash-1.5"), s2, 110, 18, w=240)
         y -= 150
 
-        # ── Hotkey ────────────────────────────────────────
+        # Hotkey
         s3 = sec("Hotkey", y, h=70)
         lbl("Current", s3, 16, 30)
         fields["hk"] = plain(self.settings.get("hotkey", "alt_r"), s3, 110, 28, w=120)
@@ -564,7 +431,7 @@ class AppDelegate(NSObject):
         s3.addSubview_(rec_btn)
         y -= 90
 
-        # ── Options ───────────────────────────────────────
+        # Options
         s4 = sec("Options", y, h=70)
 
         def tgl(text, parent, x, yv, checked, key):
@@ -646,18 +513,9 @@ class AppDelegate(NSObject):
             self._pref_win.close()
         notify("Listen", "Preferences saved")
 
-    def terminate_(self, sender):
-        if self.hotkey:
-            self.hotkey.stop()
-        NSApplication.sharedApplication().terminate_(None)
-
 
 def main():
-    app = NSApplication.sharedApplication()
-    app.setActivationPolicy_(1)
-    delegate = AppDelegate.alloc().init()
-    app.setDelegate_(delegate)
-    app.run()
+    ListenApp().run()
 
 
 if __name__ == "__main__":
