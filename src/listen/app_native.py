@@ -135,31 +135,32 @@ class ListenApp(rumps.App):
         self.build_menu()
 
     def build_menu(self):
+        self._mi_record = rumps.MenuItem("Record", callback=self.do_record)
+        self._mi_mode = rumps.MenuItem("Mode: auto", callback=self.cycle_mode)
+        self._mi_stt = rumps.MenuItem("STT: elevenlabs", callback=self.choose_stt)
+        self._mi_interp = rumps.MenuItem("Interpreter: openrouter", callback=self.choose_interp)
+        self._mi_cleanup = rumps.MenuItem("Toggle Cleanup", callback=self.toggle_cleanup)
+        self._mi_prefs = rumps.MenuItem("Preferences...", callback=self.show_prefs)
+        self._mi_quit = rumps.MenuItem("Quit", callback=self.quit_app)
         self.menu = [
-            rumps.MenuItem("Record", callback=self.do_record),
+            self._mi_record,
             None,
-            rumps.MenuItem("Mode: auto", callback=self.cycle_mode),
-            rumps.MenuItem("STT: elevenlabs", callback=self.choose_stt),
-            rumps.MenuItem("Interpreter: openrouter", callback=self.choose_interp),
+            self._mi_mode,
+            self._mi_stt,
+            self._mi_interp,
             None,
-            rumps.MenuItem("Toggle Cleanup", callback=self.toggle_cleanup),
+            self._mi_cleanup,
             None,
-            rumps.MenuItem("Preferences...", callback=self.show_prefs),
-            rumps.MenuItem("Quit", callback=self.quit_app),
+            self._mi_prefs,
+            self._mi_quit,
         ]
         self.sync_titles()
 
     def sync_titles(self):
         s = self.settings
-        for item in self.menu:
-            if item is None:
-                continue
-            if item.title.startswith("STT:"):
-                item.title = f"STT: {s.get('stt_provider', 'elevenlabs')}"
-            elif item.title.startswith("Interpreter:"):
-                item.title = f"Interpreter: {s.get('interpreter_provider', 'openrouter')}"
-            elif item.title.startswith("Mode:"):
-                item.title = f"Mode: {self.current_mode}"
+        self._mi_stt.title = f"STT: {s.get('stt_provider', 'elevenlabs')}"
+        self._mi_interp.title = f"Interpreter: {s.get('interpreter_provider', 'openrouter')}"
+        self._mi_mode.title = f"Mode: {self.current_mode}"
 
     # ── Providers ──────────────────────────────────────────
 
