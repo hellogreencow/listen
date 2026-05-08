@@ -16,15 +16,19 @@ from AppKit import (
     NSAlert,
     NSAlertFirstButtonReturn,
     NSApplication,
+    NSBezierPath,
+    NSBox,
     NSColor,
     NSFont,
     NSMakeRect,
     NSMenu,
     NSMenuItem,
+    NSSecureTextField,
     NSStatusBar,
     NSTextField,
     NSUserNotification,
     NSUserNotificationCenter,
+    NSView,
     NSWindow,
     NSButton,
     NSSwitchButton,
@@ -66,29 +70,6 @@ def notify(title: str, subtitle: str) -> None:
         pass
 
 
-def ask_text(message: str, title: str, default_text: str = "") -> Optional[str]:
-    alert = NSAlert.alloc().init()
-    alert.setMessageText_(title)
-    alert.setInformativeText_(message)
-    alert.addButtonWithTitle_("Save")
-    alert.addButtonWithTitle_("Cancel")
-    field = NSTextField.alloc().initWithFrame_(((0, 0), (360, 22)))
-    field.setStringValue_(default_text)
-    alert.setAccessoryView_(field)
-    if alert.runModal() == NSAlertFirstButtonReturn:
-        return field.stringValue()
-    return None
-
-
-def get_front_app() -> str:
-    try:
-        ws = NSWorkspace.sharedWorkspace()
-        app = ws.frontmostApplication()
-        return app.localizedName() if app else ""
-    except Exception:
-        return ""
-
-
 APP_MODES = {
     "default": "Clean up the following voice transcription. Fix grammar and punctuation. Preserve the original meaning. Only return the cleaned text, no intro:\n\n{text}",
     "email": "Rewrite the following as a professional email. Add proper greeting and sign-off if missing. Only return the email text:\n\n{text}",
@@ -109,11 +90,42 @@ APP_DETECTION = {
 
 
 def detect_mode() -> str:
-    app = get_front_app()
+    try:
+        app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        name = app.localizedName() if app else ""
+    except Exception:
+        return "default"
     for key, mode in APP_DETECTION.items():
-        if key in app:
+        if key in name:
             return mode
     return "default"
+
+
+# ── Preferences View ─────────────────────────────────────
+
+class _SectionView(NSView):
+    """Rounded card-like section for preferences."""
+
+    def initWithFrame_title_(self, frame, title):
+        self = objc.super(_SectionView, self).initWithFrame_(frame)
+        if self is None:
+            return None
+        self.setWantsLayer_(True)
+        self.layer().setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(0.12, 1.0).CGColor())
+        self.layer().setCornerRadius_(10.0)
+        self.layer().setBorderWidth_(0.5)
+        self.layer().setBorderColor_(NSColor.colorWithCalibratedWhite_alpha_(0.25, 1.0).CGColor())
+
+        # Title label
+        title_lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(16, frame.size.height - 30, 200, 20))
+        title_lbl.setStringValue_(title)
+        title_lbl.setEditable_(False)
+        title_lbl.setBordered_(False)
+        title_lbl.setBackgroundColor_(NSColor.clearColor())
+        title_lbl.setTextColor_(NSColor.whiteColor())
+        title_lbl.setFont_(NSFont.boldSystemFontOfSize_(11))
+        self.addSubview_(title_lbl)
+        return self
 
 
 # ── App Delegate ─────────────────────────────────────────
@@ -148,7 +160,9 @@ class AppDelegate(NSObject):
     def build_menu(self):
         bar = NSStatusBar.systemStatusBar()
         self.status_item = bar.statusItemWithLength_(80)
-        self.status_item.button().setTitle_("Listen")
+        btn = self.status_item.button()
+        btn.setTitle_("Listen")
+        btn.setFont_(NSFont.systemFontOfSize_(12))
 
         menu = NSMenu.alloc().init()
         self.add_item(menu, "Record", "doRecord:")
@@ -174,9 +188,7 @@ class AppDelegate(NSObject):
         s = self.settings
         self.stt_item.setTitle_(f"STT: {s.get('stt_provider', 'elevenlabs')}")
         self.interp_item.setTitle_(f"Interpreter: {s.get('interpreter_provider', 'openrouter')}")
-        self.status_item.button().setTitle_(
-            "Listen" if self.stt else "Listen !"
-        )
+        self.status_item.button().setTitle_("Listen")
 
     # ── Providers ──────────────────────────────────────────
 
@@ -231,7 +243,7 @@ class AppDelegate(NSObject):
         except Exception as e:
             log(f"recorder.start() failed: {e}")
             self.recording = False
-            self.status_item.button().setTitle_("Listen !")
+            self.status_item.button().setTitle_("Listen")
             notify("Listen", f"Recording failed: {e}")
 
     def on_release(self):
@@ -245,7 +257,7 @@ class AppDelegate(NSObject):
             self._do_process()
         except Exception as e:
             log(f"process error: {e}")
-            self.status_item.button().setTitle_("Listen !")
+            self.status_item.button().setTitle_("Listen")
 
     def _do_process(self):
         t0 = time.perf_counter()
@@ -254,7 +266,7 @@ class AppDelegate(NSObject):
             path = self.recorder.stop()
         except Exception as e:
             log(f"recorder.stop() failed: {e}")
-            self.status_item.button().setTitle_("Listen !")
+            self.status_item.button().setTitle_("Listen")
             return
 
         sounds.stop()
@@ -269,7 +281,7 @@ class AppDelegate(NSObject):
             log(f"transcribed in {(t2-t1)*1000:.0f}ms: {text[:60]}...")
         except Exception as e:
             log(f"transcription failed: {e}")
-            self.status_item.button().setTitle_("Listen !")
+            self.status_item.button().setTitle_("Listen")
             return
 
         if self.interpreter and text:
@@ -304,7 +316,7 @@ class AppDelegate(NSObject):
                 pass
 
         total = (time.perf_counter() - t0) * 1000
-        self.status_item.button().setTitle_("Listen" if self.stt else "Listen !")
+        self.status_item.button().setTitle_("Listen")
         log(f"done — total after release: {total:.0f}ms")
 
     # ── Menu Actions ───────────────────────────────────────
@@ -326,7 +338,7 @@ class AppDelegate(NSObject):
 
     def chooseStt_(self, sender):
         choices = ", ".join(registry.list_stt())
-        choice = ask_text(f"Available: {choices}", "STT Provider", self.settings.get("stt_provider", "elevenlabs"))
+        choice = self._ask_text(f"Available: {choices}", "STT Provider", self.settings.get("stt_provider", "elevenlabs"))
         if choice and choice.strip() in registry.list_stt():
             self.settings["stt_provider"] = choice.strip()
             save(self.settings)
@@ -335,7 +347,7 @@ class AppDelegate(NSObject):
 
     def chooseInterpreter_(self, sender):
         choices = ", ".join(registry.list_interpreters())
-        choice = ask_text(f"Available: {choices}", "Interpreter", self.settings.get("interpreter_provider", "openrouter"))
+        choice = self._ask_text(f"Available: {choices}", "Interpreter", self.settings.get("interpreter_provider", "openrouter"))
         if choice and choice.strip() in registry.list_interpreters():
             self.settings["interpreter_provider"] = choice.strip()
             save(self.settings)
@@ -348,87 +360,173 @@ class AppDelegate(NSObject):
         self.init_providers()
         notify("Listen", f"Cleanup {'on' if self.settings['cleanup_enabled'] else 'off'}")
 
+    def _ask_text(self, message: str, title: str, default_text: str = "") -> Optional[str]:
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_(title)
+        alert.setInformativeText_(message)
+        alert.addButtonWithTitle_("Save")
+        alert.addButtonWithTitle_("Cancel")
+        field = NSTextField.alloc().initWithFrame_(((0, 0), (360, 22)))
+        field.setStringValue_(default_text)
+        alert.setAccessoryView_(field)
+        if alert.runModal() == NSAlertFirstButtonReturn:
+            return field.stringValue()
+        return None
+
+    # ── Preferences ────────────────────────────────────────
+
     def showPreferences_(self, sender):
         win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(0, 0, 480, 400), 15, 2, False,
+            NSMakeRect(0, 0, 420, 520), 15, 2, False,
         )
         win.setTitle_("Listen Preferences")
         win.center()
 
-        fx = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, 480, 400))
-        fx.setMaterial_(8)
-        fx.setBlendingMode_(1)
-        fx.setState_(0)
-        win.setContentView_(fx)
+        # Dark background
+        bg = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, 420, 520))
+        bg.setMaterial_(8)
+        bg.setBlendingMode_(1)
+        bg.setState_(0)
+        win.setContentView_(bg)
 
-        v = fx
-        y = 350
-        gap = 30
+        y = 480
+        gap = 36
         fields = {}
 
-        def lbl(text, x, yv, w=180):
-            l = NSTextField.alloc().initWithFrame_(NSMakeRect(x, yv, w, 18))
+        def sec(title, yv, h=100):
+            s = _SectionView.alloc().initWithFrame_title_(NSMakeRect(20, yv, 380, h), title)
+            bg.addSubview_(s)
+            return s
+
+        def lbl(text, parent, x, yv, w=130):
+            l = NSTextField.alloc().initWithFrame_(NSMakeRect(x, yv, w, 16))
             l.setStringValue_(text)
             l.setEditable_(False)
             l.setBordered_(False)
             l.setBackgroundColor_(NSColor.clearColor())
-            l.setFont_(NSFont.systemFontOfSize_(12))
-            v.addSubview_(l)
+            l.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(0.7, 1.0))
+            l.setFont_(NSFont.systemFontOfSize_(11))
+            parent.addSubview_(l)
 
-        def fld(val, x, yv, w=270):
+        def secure(val, parent, x, yv, w=220):
+            f = NSSecureTextField.alloc().initWithFrame_(NSMakeRect(x, yv, w, 22))
+            f.setStringValue_(val)
+            f.setFont_(NSFont.systemFontOfSize_(11))
+            parent.addSubview_(f)
+            return f
+
+        def plain(val, parent, x, yv, w=220):
             f = NSTextField.alloc().initWithFrame_(NSMakeRect(x, yv, w, 22))
             f.setStringValue_(val)
             f.setFont_(NSFont.systemFontOfSize_(11))
-            v.addSubview_(f)
+            parent.addSubview_(f)
             return f
 
-        lbl("OpenRouter Key", 20, y)
-        fields["or"] = fld(self.settings.get("openrouter_api_key", ""), 150, y)
-        y -= gap
-        lbl("ElevenLabs Key", 20, y)
-        fields["el"] = fld(self.settings.get("elevenlabs_api_key", ""), 150, y)
-        y -= gap
-        lbl("OpenAI Key", 20, y)
-        fields["oa"] = fld(self.settings.get("openai_api_key", ""), 150, y)
-        y -= gap
-        lbl("Groq Key", 20, y)
-        fields["gq"] = fld(self.settings.get("groq_api_key", ""), 150, y)
-        y -= gap - 5
-        lbl("STT", 20, y)
-        fields["stt"] = fld(self.settings.get("stt_provider", "elevenlabs"), 150, y, 130)
-        lbl("Interpreter", 290, y)
-        fields["interp"] = fld(self.settings.get("interpreter_provider", "openrouter"), 380, y, 90)
-        y -= gap
-        lbl("Hotkey", 20, y)
-        fields["hk"] = fld(self.settings.get("hotkey", "alt_r"), 150, y, 130)
-        lbl("Model", 290, y)
-        fields["model"] = fld(self.settings.get("openrouter_model", "google/gemini-flash-1.5"), 340, y, 130)
-        y -= gap + 5
+        # ── API Keys ──────────────────────────────────────
+        s1 = sec("API Keys", y, h=210)
+        lbl("OpenRouter", s1, 16, 140)
+        fields["or"] = secure(self.settings.get("openrouter_api_key", ""), s1, 110, 138)
+        lbl("ElevenLabs", s1, 16, 105)
+        fields["el"] = secure(self.settings.get("elevenlabs_api_key", ""), s1, 110, 103)
+        lbl("OpenAI", s1, 16, 70)
+        fields["oa"] = secure(self.settings.get("openai_api_key", ""), s1, 110, 68)
+        lbl("Groq", s1, 16, 35)
+        fields["gq"] = secure(self.settings.get("groq_api_key", ""), s1, 110, 33)
+        y -= 230
 
-        def tgl(text, x, yv, checked, key):
+        # ── Providers ─────────────────────────────────────
+        s2 = sec("Providers", y, h=130)
+        lbl("STT", s2, 16, 90)
+        fields["stt"] = plain(self.settings.get("stt_provider", "elevenlabs"), s2, 110, 88, w=120)
+        lbl("Interpreter", s2, 16, 55)
+        fields["interp"] = plain(self.settings.get("interpreter_provider", "openrouter"), s2, 110, 53, w=120)
+        lbl("Model", s2, 16, 20)
+        fields["model"] = plain(self.settings.get("openrouter_model", "google/gemini-flash-1.5"), s2, 110, 18, w=240)
+        y -= 150
+
+        # ── Hotkey ────────────────────────────────────────
+        s3 = sec("Hotkey", y, h=70)
+        lbl("Current", s3, 16, 30)
+        fields["hk"] = plain(self.settings.get("hotkey", "alt_r"), s3, 110, 28, w=120)
+
+        # Record Key button
+        rec_btn = NSButton.alloc().initWithFrame_(NSMakeRect(240, 28, 120, 24))
+        rec_btn.setTitle_("Record Key")
+        rec_btn.setBezelStyle_(1)
+        rec_btn.setTarget_(self)
+        rec_btn.setAction_("startRecordKey:")
+        s3.addSubview_(rec_btn)
+        y -= 90
+
+        # ── Options ───────────────────────────────────────
+        s4 = sec("Options", y, h=70)
+
+        def tgl(text, parent, x, yv, checked, key):
             b = NSButton.alloc().initWithFrame_(NSMakeRect(x, yv, 130, 20))
             b.setButtonType_(NSSwitchButton)
             b.setTitle_(text)
             b.setState_(1 if checked else 0)
             b.setFont_(NSFont.systemFontOfSize_(11))
-            v.addSubview_(b)
+            parent.addSubview_(b)
             fields[key] = b
             return b
 
-        tgl("Cleanup", 20, y, self.settings.get("cleanup_enabled", True), "clean")
-        tgl("Paste", 170, y, self.settings.get("use_paste", True), "paste")
-        y -= gap
+        tgl("Cleanup", s4, 16, 25, self.settings.get("cleanup_enabled", True), "clean")
+        tgl("Paste", s4, 150, 25, self.settings.get("use_paste", True), "paste")
+        y -= 90
 
-        save_btn = NSButton.alloc().initWithFrame_(NSMakeRect(190, y, 100, 28))
+        # Save button
+        save_btn = NSButton.alloc().initWithFrame_(NSMakeRect(160, 20, 100, 28))
         save_btn.setTitle_("Save")
         save_btn.setBezelStyle_(1)
         save_btn.setTarget_(self)
         save_btn.setAction_("savePrefs:")
-        v.addSubview_(save_btn)
+        bg.addSubview_(save_btn)
 
         self._pref_win = win
         self._pref_fields = fields
         win.makeKeyAndOrderFront_(None)
+
+    def startRecordKey_(self, sender):
+        """Show a modal to capture the next keypress."""
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("Record Hotkey")
+        alert.setInformativeText_("Press the key you want to use as your hotkey...")
+        alert.addButtonWithTitle_("Cancel")
+
+        # Show alert non-blocking and capture key in background
+        self._record_key_window = alert.window()
+
+        # Start a temporary key listener
+        self._recorded_key = None
+        self._key_listener = None
+
+        def on_press(key):
+            try:
+                self._recorded_key = key.name if hasattr(key, 'name') and key.name else str(key.char)
+            except Exception:
+                self._recorded_key = str(key)
+            if self._key_listener:
+                self._key_listener.stop()
+            # Close alert
+            try:
+                self._record_key_window.orderOut_(None)
+            except Exception:
+                pass
+            # Update field
+            if self._recorded_key and hasattr(self, '_pref_fields') and self._pref_fields:
+                self._pref_fields["hk"].setStringValue_(self._recorded_key)
+                notify("Listen", f"Hotkey set to: {self._recorded_key}")
+
+        from pynput import keyboard
+        self._key_listener = keyboard.Listener(on_press=on_press)
+        self._key_listener.start()
+
+        # Run alert modally - when user clicks Cancel or presses a key, the listener handles it
+        result = alert.runModal()
+        if self._key_listener:
+            self._key_listener.stop()
+            self._key_listener = None
 
     def savePrefs_(self, sender):
         f = self._pref_fields
