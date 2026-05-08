@@ -1,29 +1,23 @@
-# 🎙️ Listen
+# Listen
 
-![Build](https://img.shields.io/badge/build-passing-brightgreen)
-![License](https://img.shields.io/badge/license-MIT-blue)
-![Python](https://img.shields.io/badge/python-3.9%2B-blue)
+> Hold a key. Speak. Clean AI-transcribed text appears at your cursor.
 
-> Hold a key. Speak. AI-transcribed text appears at your cursor.
+A fast, lightweight macOS voice-to-text app. No dock icon. Just a simple menubar item. Hold your hotkey, speak, release — text is transcribed and pasted where you're typing.
 
-**Listen** is a fast, lightweight macOS voice-to-text app that stays out of your way. No dock icon. No menubar clutter. Just a tiny floating pill in the corner and a hold-to-record workflow that feels like magic.
-
-<!-- SCREENSHOT: A 120×32px translucent floating pill in the top-right corner of a macOS desktop, showing "Recording" in warm yellow while active. Replace this comment with an actual screenshot. -->
-
----
-
-## ✨ How it works
+## How it works
 
 1. **Hold** your hotkey (default: **Right Option**)
-2. **Speak** — a translucent pill HUD appears while recording
-3. **Release** — audio is transcribed by your chosen STT engine, optionally cleaned up by an LLM
-4. **Text appears** — pasted directly into the focused text field via native Quartz events
+2. **Speak** — the menubar item shows "Recording"
+3. **Release** — audio is transcribed by your STT engine, optionally cleaned up by an LLM
+4. **Text appears** — pasted directly into the focused text field
 
-End-to-end in **~650ms** with cloud STT, **~200ms** with local STT. RAM footprint: **~50MB**.
+End-to-end in **~700ms** with cloud STT, **~200ms** with local STT. RAM footprint: **~50MB**.
 
 ---
 
-## 🚀 Installation
+## Installation
+
+### Pre-built
 
 1. Download **Listen.app** from [Releases](../../releases)
 2. Drag to **Applications**
@@ -42,169 +36,167 @@ python3 setup.py py2app
 
 ---
 
-## 🆓 Free vs Paid
+## Free vs Paid
+
+Listen works **completely free** with on-device models. Cloud providers are optional for faster speed.
 
 | Feature | Free (no API key) | Fast (BYOK) |
 |---------|-------------------|-------------|
 | **Local Whisper** (on-device) | ✅ | ✅ |
 | **Groq Whisper** (free tier) | ✅ | ✅ |
-| **ElevenLabs Scribe** | — | ✅ |
+| **ElevenLabs Scribe** | — | ✅ Fastest |
 | **OpenAI Whisper** | — | ✅ |
 | **OpenAI-Compatible** endpoints | — | ✅ |
-| **LLM cleanup / interpretation** | ✅ Free models via OpenRouter | ✅ Paid models via OpenRouter, OpenAI, Groq |
-| **Mode-aware formatting** (email, code, slack, etc.) | ✅ | ✅ |
+| **LLM cleanup** | ✅ OpenRouter free / Groq free | ✅ Paid models |
+| **Mode-aware formatting** | ✅ | ✅ |
 
 ---
 
-## 📊 Provider Comparison
+## Providers
 
 ### Speech-to-Text
 
-| Provider | Speed | Cost | Quality | Setup |
-|----------|-------|------|---------|-------|
-| **Local Whisper** (`faster-whisper`) | ⚡ ~200ms | Free | Good | None — runs on-device |
-| **Groq Whisper** | ⚡⚡ ~300ms | Free tier available | Excellent | OpenAI-Compatible endpoint |
-| **ElevenLabs Scribe** | ⚡ ~400ms | Paid | 🏆 Best-in-class | ElevenLabs API key |
-| **OpenAI Whisper** | ~600ms | $0.006/min | Excellent | OpenAI API key |
-| **OpenAI-Compatible** | Varies | Varies | Varies | Any compatible endpoint (Groq, OpenRouter, etc.) |
+| Provider | Key | Cost | Speed | Quality |
+|----------|-----|------|-------|---------|
+| **Local Whisper** | `local` | Free | ~1-3s | Good |
+| **Groq Whisper** | `groq` | Free tier | ~200ms | Excellent |
+| **ElevenLabs Scribe** | `elevenlabs` | Paid | ~600ms | Best |
+| **OpenAI Whisper** | `openai` | Paid | ~1s | Excellent |
+| **OpenAI-Compatible** | `openai-compatible` | Varies | Varies | Varies |
 
-### Cleanup / Interpreter
+### Cleanup / Interpretation
 
-| Provider | Speed | Cost | Best For |
-|----------|-------|------|----------|
-| **OpenRouter** | Fast | Free tiers available (gemini-flash:free, mistral-7b:free) | Flexibility — 100+ models |
-| **Groq** | ⚡⚡ Fastest | Free tier available | Speed — Mixtral, Llama 3 on LPUs |
-| **OpenAI** | Fast | $0.15–$5/M tokens | Quality — GPT-4o-mini, GPT-4o |
+| Provider | Key | Cost | Speed |
+|----------|-----|------|-------|
+| **Groq** | `groq` | Free tier | ~100ms |
+| **OpenRouter** | `openrouter` | Free + Paid | ~300ms |
+| **OpenAI** | `openai` | Paid | ~500ms |
 
-> 💡 **Pro tip:** Use *Local Whisper* + *OpenRouter free tier* for a completely free, zero-API-key setup.
-
----
-
-## 🏗️ Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                         macOS                                │
-│  ┌─────────────┐   ┌──────────┐   ┌─────────────────────┐  │
-│  │ Global      │   │ Floating │   │ AVAudioRecorder     │  │
-│  │ Hotkey      │──►│ Pill HUD │   │ (AAC/M4A, native)   │  │
-│  │ (PyObjC)    │   │ (top-right│   └──────────┬──────────┘  │
-│  └─────────────┘   └──────────┘              │             │
-│         │                                     │             │
-│         └─────────────────────────────────────┘             │
-│                        Audio file                           │
-│                              │                              │
-│                              ▼                              │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │              Pluggable STT Provider                  │   │
-│  │  ┌──────────┐ ┌──────────┐ ┌────────┐ ┌──────────┐ │   │
-│  │  │ OpenAI   │ │ ElevenLabs│ │ Local  │ │ OpenAI-  │ │   │
-│  │  │ Whisper  │ │ Scribe    │ │Whisper │ │Compatible│ │   │
-│  │  └──────────┘ └──────────┘ └────────┘ └──────────┘ │   │
-│  └────────────────────────┬────────────────────────────┘   │
-│                           │ Raw text                        │
-│                           ▼                                 │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │              Interpreter (optional)                  │   │
-│  │  ┌──────────┐ ┌──────────┐ ┌────────┐              │   │
-│  │  │ OpenRouter│ │ OpenAI   │ │ Groq*  │              │   │
-│  │  │ (100+ models)│ GPT   │ │ (via    │              │   │
-│  │  └──────────┘ └──────────┘ │ compat)│              │   │
-│  └────────────────────────┬────────────────────────────┘   │
-│                           │ Cleaned text                    │
-│                           ▼                                 │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │  NSPasteboard + Quartz CGEvent (Cmd+V)              │   │
-│  │  → Paste into focused text field, restore clipboard │   │
-│  └─────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-
-*Groq available via OpenAI-Compatible endpoint configuration
-```
+Switch providers from the menubar menu.
 
 ---
 
-## 🛠️ Configuration
+## Free Tier Setup
 
-Settings are stored in `~/.listen/config.json` and editable via **Right-click → Preferences** on the floating pill.
+### Option 1: Local Whisper (100% offline)
+
+```bash
+pip install faster-whisper
+```
+
+Then switch STT provider to `local` in the menu. First run downloads the model (~150MB for `tiny`, ~500MB for `base`).
+
+### Option 2: Groq (free cloud API)
+
+1. Get a free API key at [console.groq.com/keys](https://console.groq.com/keys)
+2. Paste it in **Preferences → Groq Key**
+3. Switch STT to `groq` and Interpreter to `groq`
+
+Groq uses LPU (Language Processing Unit) chips — inference is extremely fast.
+
+### Option 3: OpenRouter free models
+
+1. Get a free API key at [openrouter.ai/keys](https://openrouter.ai/keys)
+2. Paste it in **Preferences → OpenRouter Key**
+3. Select a free model like `google/gemini-flash-1.5:free`
+
+---
+
+## Configuration
+
+Stored in `~/.listen/config.json`:
 
 ```json
 {
   "stt_provider": "elevenlabs",
   "interpreter_provider": "openrouter",
+  "openrouter_api_key": "sk-or-...",
+  "elevenlabs_api_key": "sk_...",
+  "openai_api_key": "sk-...",
+  "groq_api_key": "gsk_...",
   "hotkey": "alt_r",
   "cleanup_enabled": true,
-  "use_paste": true,
-  "sound_enabled": false,
-  "overlay_enabled": true
+  "use_paste": true
 }
 ```
 
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `hotkey` | `alt_r` | Key to hold. pynput key names. |
+| `cleanup_enabled` | `true` | LLM fixes grammar, removes filler words |
+| `use_paste` | `true` | `Cmd+V` paste. `false` = keystroke typing. |
+| `stt_provider` | `elevenlabs` | `local`, `groq`, `elevenlabs`, `openai`, `openai-compatible` |
+| `interpreter_provider` | `openrouter` | `groq`, `openrouter`, `openai` |
+
 ### Mode-aware cleanup
 
-Listen detects the frontmost app and adapts its cleanup prompt automatically:
+The app detects the frontmost application and adapts the cleanup prompt:
 
-| App | Mode | Behavior |
-|-----|------|----------|
-| Mail, Outlook, Gmail | `email` | Professional greeting + sign-off |
+| App | Mode | What it does |
+|-----|------|-------------|
+| Mail, Outlook | `email` | Adds greeting, sign-off, formatting |
 | Slack, Discord, Messages | `slack` | Short, casual, friendly |
-| Cursor, Xcode, Terminal | `code` | Code comments / docstrings |
-| Notes, Notion, Obsidian | `notes` | Bullet-point formatting |
-| Everything else | `default` | Clean grammar + punctuation |
-
-Cycle modes manually via **Right-click → Mode**.
+| Cursor, Xcode, Terminal | `code` | Code comments, docstrings |
+| Notes, Notion, Obsidian | `notes` | Bullet points, removes filler |
+| Default | `default` | Clean grammar and punctuation |
 
 ---
 
-## 💡 Why Listen?
+## Architecture
 
-| | Listen | Superwhisper | Wispr Flow |
-|---|---|---|---|
-| **Price** | Free / BYOK | **$8.49/mo** | **$15/mo** |
-| **Local STT** | ✅ Free | ✅ | ❌ |
-| **Cloud STT choice** | ✅ 4+ providers | ✅ OpenAI only | ✅ Proprietary |
-| **RAM** | **~50MB** | ~300MB | ~200MB |
-| **Dock / Menubar** | ❌ None | ✅ Menubar | ✅ Menubar |
-| **Open Source** | ✅ MIT | ❌ | ❌ |
-| **macOS Native** | ✅ PyObjC + AVFoundation | ✅ | ✅ |
+```
+Global Hotkey (pynput)
+       │
+       ▼
+┌─────────────┐     ┌──────────┐     ┌────────────────┐
+│  Menubar    │◄────│  Audio   │────►│  STT Provider  │
+│  Status     │     │ Recorder │     │  (pluggable)   │
+└─────────────┘     └──────────┘     └────────────────┘
+                                              │
+                                              ▼
+                                    ┌────────────────────┐
+                                    │  Interpreter       │
+                                    │  (cleanup/interpret)│
+                                    └────────────────────┘
+                                              │
+                                              ▼
+                                    ┌────────────────────┐
+                                    │  NSPasteboard      │
+                                    │  Quartz CGEvent    │
+                                    │  → focused field   │
+                                    └────────────────────┘
+```
 
-Listen is built for people who want **speed, privacy, and control** without a subscription. Use it completely free with local Whisper, or bring your own API keys and pay only for what you use.
+- **Audio**: AVAudioRecorder via PyObjC, AAC/M4A format (~20x smaller than WAV)
+- **Paste**: Direct NSPasteboard + Quartz CGEvent (no subprocess overhead)
+- **Connection pre-warming**: HTTP connection warmed at startup for zero-latency first request
 
 ---
 
-## 📁 Project Structure
+## File Structure
 
 ```
 src/listen/
-├── app_native.py          # Main app — floating pill, lifecycle, processing loop
-├── recorder.py            # AVAudioRecorder wrapper (AAC/M4A, native macOS)
-├── hotkey.py              # Global hotkey listener (PyObjC / pynput)
-├── typer.py               # Clipboard + Quartz CGEvent paste injection
-├── sounds.py              # Audio feedback on record/stop/error
-├── settings.py            # Config persistence (~/.listen/config.json)
-└── providers/
-    ├── base.py            # Provider registry + abstract base classes
-    ├── stt_openai.py      # OpenAI Whisper
-    ├── stt_elevenlabs.py  # ElevenLabs Scribe
-    ├── stt_local.py       # faster-whisper (on-device)
-    ├── stt_openai_compatible.py  # Generic OpenAI-compatible (Groq, etc.)
-    ├── interpreter_openai.py     # GPT-4o-mini cleanup
-    └── interpreter_openrouter.py # 100+ models via OpenRouter
+  app_native.py          # Main app (menubar + hotkey lifecycle)
+  recorder.py            # AVAudioRecorder (native macOS AAC)
+  hotkey.py              # Global hotkey listener
+  typer.py               # NSPasteboard + Quartz paste
+  sounds.py              # Audio feedback (optional)
+  settings.py            # Config persistence
+  providers/             # Pluggable STT + interpreter providers
+    base.py
+    stt_elevenlabs.py
+    stt_groq.py
+    stt_local.py
+    stt_openai.py
+    stt_openai_compatible.py
+    interpreter_openrouter.py
+    interpreter_groq.py
+    interpreter_openai.py
 ```
 
 ---
 
-## 🔑 Permissions
+## License
 
-Listen requires two macOS permissions to function:
-
-- **Microphone** — to record your voice
-- **Accessibility** — to register global hotkeys and paste text into other apps
-
-Go to **System Settings → Privacy & Security** to enable both after first launch.
-
----
-
-## 📝 License
-
-MIT © [Oli](https://github.com/olivernn)
+MIT

@@ -1,6 +1,6 @@
 """Listen — Fast voice-to-text for macOS.
 
-Floating pill UI (no menubar) for reliability.
+Simple menubar app. No dock icon. Hold key → record → AI transcribe → paste.
 """
 
 import os
@@ -16,26 +16,22 @@ from AppKit import (
     NSAlert,
     NSAlertFirstButtonReturn,
     NSApplication,
-    NSBezierPath,
     NSColor,
     NSFont,
-    NSFontAttributeName,
-    NSForegroundColorAttributeName,
     NSMakeRect,
     NSMenu,
     NSMenuItem,
-    NSString,
+    NSStatusBar,
     NSTextField,
     NSUserNotification,
     NSUserNotificationCenter,
-    NSView,
     NSWindow,
     NSButton,
     NSSwitchButton,
     NSVisualEffectView,
     NSWorkspace,
 )
-from Foundation import NSObject, NSTimer
+from Foundation import NSObject
 
 from . import sounds
 from .hotkey import HotkeyListener
@@ -45,10 +41,8 @@ from .settings import load, save
 from .typer import paste_text, type_text
 
 
-# ── Logging ──────────────────────────────────────────────
-
-LOG_PATH = Path.home() / ".listen" / "debug.log"
 _DEBUG = os.environ.get("LISTEN_DEBUG", "0") == "1"
+LOG_PATH = Path.home() / ".listen" / "debug.log"
 
 
 def log(msg: str) -> None:
@@ -62,40 +56,14 @@ def log(msg: str) -> None:
             pass
 
 
-# ── Config ───────────────────────────────────────────────
-
-APP_MODES = {
-    "default": "Clean up the following voice transcription. Fix grammar and punctuation. Preserve the original meaning. Only return the cleaned text, no intro:\n\n{text}",
-    "email": "Rewrite the following as a professional email. Add proper greeting and sign-off if missing. Only return the email text:\n\n{text}",
-    "slack": "Rewrite the following as a casual Slack message. Keep it short and friendly. Only return the message:\n\n{text}",
-    "code": "Convert the following speech into a code comment or docstring. Use proper formatting. Only return the comment:\n\n{text}",
-    "notes": "Format the following as clean bullet-point notes. Remove filler words. Only return the notes:\n\n{text}",
-    "casual": "Clean up the following casual speech. Remove ums and ahs. Keep the casual tone. Only return the text:\n\n{text}",
-}
-
-APP_DETECTION = {
-    "Mail": "email", "Gmail": "email", "Outlook": "email",
-    "Slack": "slack", "Discord": "slack", "Telegram": "slack",
-    "Messages": "slack", "WhatsApp": "slack",
-    "Cursor": "code", "Code": "code", "Xcode": "code",
-    "PyCharm": "code", "Terminal": "code", "iTerm": "code",
-    "Notes": "notes", "Notion": "notes", "Obsidian": "notes",
-}
-
-NSFloatingWindowLevel = 3
-NSWindowCollectionBehaviorCanJoinAllSpaces = 1 << 0
-NSWindowCollectionBehaviorStationary = 1 << 4
-
-
 def notify(title: str, subtitle: str) -> None:
-    log(f"NOTIFY: {title} — {subtitle}")
     try:
         n = NSUserNotification.alloc().init()
         n.setTitle_(title)
         n.setInformativeText_(subtitle)
         NSUserNotificationCenter.defaultUserNotificationCenter().deliverNotification_(n)
-    except Exception as e:
-        log(f"notify error: {e}")
+    except Exception:
+        pass
 
 
 def ask_text(message: str, title: str, default_text: str = "") -> Optional[str]:
@@ -121,57 +89,31 @@ def get_front_app() -> str:
         return ""
 
 
+APP_MODES = {
+    "default": "Clean up the following voice transcription. Fix grammar and punctuation. Preserve the original meaning. Only return the cleaned text, no intro:\n\n{text}",
+    "email": "Rewrite the following as a professional email. Add proper greeting and sign-off if missing. Only return the email text:\n\n{text}",
+    "slack": "Rewrite the following as a casual Slack message. Keep it short and friendly. Only return the message:\n\n{text}",
+    "code": "Convert the following speech into a code comment or docstring. Use proper formatting. Only return the comment:\n\n{text}",
+    "notes": "Format the following as clean bullet-point notes. Remove filler words. Only return the notes:\n\n{text}",
+    "casual": "Clean up the following casual speech. Remove ums and ahs. Keep the casual tone. Only return the text:\n\n{text}",
+}
+
+APP_DETECTION = {
+    "Mail": "email", "Gmail": "email", "Outlook": "email",
+    "Slack": "slack", "Discord": "slack", "Telegram": "slack",
+    "Messages": "slack", "WhatsApp": "slack",
+    "Cursor": "code", "Code": "code", "Xcode": "code",
+    "PyCharm": "code", "Terminal": "code", "iTerm": "code",
+    "Notes": "notes", "Notion": "notes", "Obsidian": "notes",
+}
+
+
 def detect_mode() -> str:
     app = get_front_app()
     for key, mode in APP_DETECTION.items():
         if key in app:
             return mode
     return "default"
-
-
-# ── Pill View ────────────────────────────────────────────
-
-class _PillView(NSView):
-    """Custom view that draws a rounded pill + status text."""
-
-    def initWithFrame_(self, frame):
-        self = objc.super(_PillView, self).initWithFrame_(frame)
-        if self is None:
-            return None
-        self.label_text = "Listen"
-        self.recording = False
-        self.setWantsLayer_(True)
-        return self
-
-    def drawRect_(self, rect):
-        bounds = self.bounds()
-        path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-            bounds, 16.0, 16.0
-        )
-
-        if self.recording:
-            NSColor.colorWithCalibratedWhite_alpha_(0.25, 0.95).setFill()
-        else:
-            NSColor.colorWithCalibratedWhite_alpha_(0.15, 0.92).setFill()
-        path.fill()
-
-        if self.recording:
-            text_color = NSColor.colorWithCalibratedRed_green_blue_alpha_(
-                1.0, 0.85, 0.3, 1.0
-            )  # warm yellow
-        else:
-            text_color = NSColor.whiteColor()
-
-        attrs = {
-            NSFontAttributeName: NSFont.systemFontOfSize_(13),
-            NSForegroundColorAttributeName: text_color,
-        }
-        text = NSString.stringWithString_(self.label_text)
-        text.drawAtPoint_withAttributes_((14, bounds.size.height / 2 - 8), attrs)
-
-    def rightMouseDown_(self, event):
-        if hasattr(self, "delegate") and self.delegate:
-            self.delegate.showContextMenu_(event)
 
 
 # ── App Delegate ─────────────────────────────────────────
@@ -183,141 +125,58 @@ class AppDelegate(NSObject):
         if self is None:
             return None
 
-        log("=== Listen started ===")
         self.recorder = AudioRecorder()
         self.hotkey: Optional[HotkeyListener] = None
         self.recording = False
         self.record_start_time: float = 0.0
         self.settings = load()
-        # No artificial minimum duration — stop immediately on key release
         self.stt = None
         self.interpreter = None
         self.current_mode = "default"
+        self.status_item = None
 
-        self._window: Optional[NSWindow] = None
-        self._pill_view: Optional[_PillView] = None
-
-        try:
-            self.init_providers()
-            log(f"providers: stt={self.stt is not None}, interp={self.interpreter is not None}")
-        except Exception as e:
-            log(f"init_providers error: {e}")
-
+        self.init_providers()
         sounds.set_enabled(self.settings.get("sound_enabled", False))
-
-        try:
-            self.start_hotkey()
-            log("hotkey started")
-        except Exception as e:
-            log(f"start_hotkey error: {e}")
-
+        self.start_hotkey()
         return self
 
     def applicationDidFinishLaunching_(self, notification):
-        log("applicationDidFinishLaunching")
-        try:
-            self._build_pill()
-            self._build_context_menu()
-            log("pill built")
-        except Exception as e:
-            log(f"build_pill error: {e}")
-            traceback.print_exc()
+        self.build_menu()
 
-    # ── Floating Pill ──────────────────────────────────────
+    # ── Menu ───────────────────────────────────────────────
 
-    def _build_pill(self):
-        screens = NSScreen.screens()
-        screen = NSScreen.mainScreen() or (screens[0] if screens else None)
-        if screen is None:
-            log("no screen found")
-            return
+    def build_menu(self):
+        bar = NSStatusBar.systemStatusBar()
+        self.status_item = bar.statusItemWithLength_(80)
+        self.status_item.button().setTitle_("Listen")
 
-        frame = screen.visibleFrame()
-        w, h = 120, 32
-        x = frame.origin.x + frame.size.width - w - 16
-        y = frame.origin.y + frame.size.height - h - 8
-
-        self._window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(x, y, w, h),
-            0,  # borderless
-            2,  # buffered
-            False,
-        )
-        self._window.setLevel_(NSFloatingWindowLevel)
-        self._window.setBackgroundColor_(NSColor.clearColor())
-        self._window.setOpaque_(False)
-        self._window.setHasShadow_(True)
-        self._window.setCollectionBehavior_(
-            NSWindowCollectionBehaviorCanJoinAllSpaces
-            | NSWindowCollectionBehaviorStationary
-        )
-        self._window.setIgnoresMouseEvents_(False)
-        self._window.setAcceptsMouseMovedEvents_(False)
-
-        self._pill_view = _PillView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
-        self._pill_view.delegate = self
-        self._window.setContentView_(self._pill_view)
-        self._window.orderFront_(None)
-        log(f"pill at ({x:.0f}, {y:.0f}) size ({w}, {h})")
-
-    def setPillLabel_(self, label):
-        try:
-            if self._pill_view:
-                self._pill_view.label_text = str(label)
-                self._pill_view.setNeedsDisplay_(True)
-        except Exception as e:
-            log(f"setPillLabel error: {e}")
-
-    def setPillRecording_(self, recording):
-        try:
-            if self._pill_view:
-                self._pill_view.recording = bool(recording)
-                self._pill_view.setNeedsDisplay_(True)
-        except Exception as e:
-            log(f"setPillRecording error: {e}")
-
-    def set_pill_label(self, label: str) -> None:
-        self.performSelectorOnMainThread_withObject_waitUntilDone_(
-            "setPillLabel:", label, False,
-        )
-
-    def set_pill_recording(self, recording: bool) -> None:
-        self.performSelectorOnMainThread_withObject_waitUntilDone_(
-            "setPillRecording:", recording, False,
-        )
-
-    # ── Context Menu ───────────────────────────────────────
-
-    def _build_context_menu(self):
-        self._menu = NSMenu.alloc().init()
-        self.add_menu_item(self._menu, "⚡ Record", "doRecord:")
-        self._menu.addItem_(NSMenuItem.separatorItem())
-        self.mode_item = self.add_menu_item(self._menu, "Mode: auto", "cycleMode:")
-        self.stt_item = self.add_menu_item(self._menu, "STT: elevenlabs", "chooseStt:")
-        self.interp_item = self.add_menu_item(self._menu, "Interpreter: openrouter", "chooseInterpreter:")
-        self._menu.addItem_(NSMenuItem.separatorItem())
-        self.add_menu_item(self._menu, "Toggle Cleanup", "toggleCleanup:")
-        self._menu.addItem_(NSMenuItem.separatorItem())
-        self.add_menu_item(self._menu, "Preferences...", "showPreferences:")
-        self.add_menu_item(self._menu, "Quit", "terminate:")
+        menu = NSMenu.alloc().init()
+        self.add_item(menu, "Record", "doRecord:")
+        menu.addItem_(NSMenuItem.separatorItem())
+        self.mode_item = self.add_item(menu, "Mode: auto", "cycleMode:")
+        self.stt_item = self.add_item(menu, "STT: elevenlabs", "chooseStt:")
+        self.interp_item = self.add_item(menu, "Interpreter: openrouter", "chooseInterpreter:")
+        menu.addItem_(NSMenuItem.separatorItem())
+        self.add_item(menu, "Toggle Cleanup", "toggleCleanup:")
+        menu.addItem_(NSMenuItem.separatorItem())
+        self.add_item(menu, "Preferences...", "showPreferences:")
+        self.add_item(menu, "Quit", "terminate:")
+        self.status_item.setMenu_(menu)
         self.sync_titles()
 
-    def add_menu_item(self, menu, title, action):
+    def add_item(self, menu, title, action):
         m = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, action, "")
         m.setTarget_(self)
         menu.addItem_(m)
         return m
 
-    def showContextMenu_(self, event):
-        if self._menu:
-            NSMenu.popUpContextMenu_withEvent_forView_(
-                self._menu, event, self._pill_view
-            )
-
     def sync_titles(self):
         s = self.settings
         self.stt_item.setTitle_(f"STT: {s.get('stt_provider', 'elevenlabs')}")
         self.interp_item.setTitle_(f"Interpreter: {s.get('interpreter_provider', 'openrouter')}")
+        self.status_item.button().setTitle_(
+            "Listen" if self.stt else "Listen !"
+        )
 
     # ── Providers ──────────────────────────────────────────
 
@@ -329,14 +188,13 @@ class AppDelegate(NSObject):
             self.stt = None
             log(f"stt init failed: {e}")
         try:
-            if s.get("cleanup_enabled", False):
+            if s.get("cleanup_enabled", True):
                 self.interpreter = registry.get_interpreter(s["interpreter_provider"], s)
             else:
                 self.interpreter = None
         except Exception as e:
             self.interpreter = None
             log(f"interpreter init failed: {e}")
-        # Pre-warm STT connection in background so TCP/TLS is already established
         if self.stt and hasattr(self.stt, "session"):
             threading.Thread(target=self._warm_stt, daemon=True).start()
 
@@ -344,9 +202,8 @@ class AppDelegate(NSObject):
         try:
             if hasattr(self.stt, "session"):
                 self.stt.session.head("https://api.elevenlabs.io/v1", timeout=5)
-                log("stt connection warmed")
         except Exception:
-            pass  # HEAD may 404, that's fine — TCP/TLS is still warmed
+            pass
 
     # ── Hotkey ─────────────────────────────────────────────
 
@@ -361,84 +218,62 @@ class AppDelegate(NSObject):
         self.hotkey.start()
 
     def on_press(self):
-        log("on_press called")
         if self.recording:
-            log("already recording, ignoring")
             return
         if not self.stt:
-            log("no stt, playing error sound")
-            sounds.error()
             return
         self.recording = True
         self.record_start_time = time.time()
-        log("recording started")
-        self.set_pill_label("Recording")
-        self.set_pill_recording(True)
+        self.current_mode = detect_mode()
+        self.status_item.button().setTitle_("Recording")
         try:
             self.recorder.start()
-            log("recorder.start() OK")
         except Exception as e:
-            log(f"recorder.start() FAILED: {e}")
-            traceback.print_exc()
+            log(f"recorder.start() failed: {e}")
             self.recording = False
-            self.set_pill_label("Listen ⚠️")
-            self.set_pill_recording(False)
-            sounds.error()
+            self.status_item.button().setTitle_("Listen !")
             notify("Listen", f"Recording failed: {e}")
 
     def on_release(self):
-        log("on_release called")
         if not self.recording:
             return
         self.recording = False
         threading.Thread(target=self._process_thread, daemon=True).start()
 
     def _process_thread(self):
-        log("process_thread started")
         try:
             self._do_process()
         except Exception as e:
-            log(f"process_thread error: {e}")
-            traceback.print_exc()
-            sounds.error()
-            self.set_pill_label("Listen ⚠️")
-            self.set_pill_recording(False)
+            log(f"process error: {e}")
+            self.status_item.button().setTitle_("Listen !")
 
     def _do_process(self):
         t0 = time.perf_counter()
 
-        log("stopping recorder...")
         try:
             path = self.recorder.stop()
-            log(f"recorder stopped in {(time.perf_counter() - t0)*1000:.0f}ms, path={path}")
         except Exception as e:
             log(f"recorder.stop() failed: {e}")
-            self.set_pill_label("Listen ⚠️")
-            self.set_pill_recording(False)
+            self.status_item.button().setTitle_("Listen !")
             return
 
         sounds.stop()
-        self.set_pill_label("... processing")
-        self.set_pill_recording(False)
+        self.status_item.button().setTitle_("Processing...")
 
-        # Detect front-app mode after recording (not during press)
         self.current_mode = detect_mode()
-        log(f"mode={self.current_mode}")
 
         t1 = time.perf_counter()
-        log("transcribing...")
         try:
             text = self.stt.transcribe(path)
             t2 = time.perf_counter()
             log(f"transcribed in {(t2-t1)*1000:.0f}ms: {text[:60]}...")
         except Exception as e:
             log(f"transcription failed: {e}")
-            self.set_pill_label("Listen ⚠️")
+            self.status_item.button().setTitle_("Listen !")
             return
 
         if self.interpreter and text:
             t3 = time.perf_counter()
-            log("interpreting...")
             try:
                 mode_prompt = APP_MODES.get(self.current_mode, APP_MODES["default"])
                 text = self.interpreter.interpret(text, instruction=mode_prompt)
@@ -447,14 +282,12 @@ class AppDelegate(NSObject):
             except Exception as e:
                 log(f"interpretation failed: {e}")
 
-        # Delete temp file immediately (non-blocking)
         try:
             path.unlink()
         except Exception:
             pass
 
         t5 = time.perf_counter()
-        log("pasting...")
         try:
             if self.settings.get("use_paste", True):
                 paste_text(text)
@@ -467,11 +300,11 @@ class AppDelegate(NSObject):
             try:
                 subprocess.run(f"echo '{text}' | pbcopy", shell=True, check=True)
                 notify("Listen", "Copied to clipboard")
-            except Exception as e2:
-                log(f"pbcopy also failed: {e2}")
+            except Exception:
+                pass
 
         total = (time.perf_counter() - t0) * 1000
-        self.set_pill_label("Listen")
+        self.status_item.button().setTitle_("Listen" if self.stt else "Listen !")
         log(f"done — total after release: {total:.0f}ms")
 
     # ── Menu Actions ───────────────────────────────────────
@@ -510,28 +343,26 @@ class AppDelegate(NSObject):
             self.sync_titles()
 
     def toggleCleanup_(self, sender):
-        self.settings["cleanup_enabled"] = not self.settings.get("cleanup_enabled", False)
+        self.settings["cleanup_enabled"] = not self.settings.get("cleanup_enabled", True)
         save(self.settings)
         self.init_providers()
         notify("Listen", f"Cleanup {'on' if self.settings['cleanup_enabled'] else 'off'}")
 
-
-
     def showPreferences_(self, sender):
         win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(0, 0, 480, 360), 15, 2, False,
+            NSMakeRect(0, 0, 480, 400), 15, 2, False,
         )
         win.setTitle_("Listen Preferences")
         win.center()
 
-        fx = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, 480, 360))
+        fx = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, 480, 400))
         fx.setMaterial_(8)
         fx.setBlendingMode_(1)
         fx.setState_(0)
         win.setContentView_(fx)
 
         v = fx
-        y = 310
+        y = 350
         gap = 30
         fields = {}
 
@@ -620,7 +451,6 @@ class AppDelegate(NSObject):
         notify("Listen", "Preferences saved")
 
     def terminate_(self, sender):
-        log("terminating")
         if self.hotkey:
             self.hotkey.stop()
         NSApplication.sharedApplication().terminate_(None)
