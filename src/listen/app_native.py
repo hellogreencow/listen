@@ -354,145 +354,107 @@ class ListenApp(rumps.App):
 
     def show_prefs(self, sender):
         win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(0, 0, 420, 520), 15, 2, False,
+            NSMakeRect(0, 0, 400, 420), 15, 2, False,
         )
-        win.setTitle_("Listen Preferences")
+        win.setTitle_("Preferences")
         win.center()
 
-        bg = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, 420, 520))
-        bg.setMaterial_(8)
-        bg.setBlendingMode_(1)
-        bg.setState_(0)
-        win.setContentView_(bg)
+        # Simple solid background - no visual effects, no custom views
+        v = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 400, 420))
+        v.setWantsLayer_(True)
+        v.layer().setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(0.95, 1.0).CGColor())
+        win.setContentView_(v)
 
-        y = 480
         fields = {}
+        y = 380
 
-        def sec(title, yv, h=100):
-            s = _SectionView.alloc().initWithFrame_title_(NSMakeRect(20, yv, 380, h), title)
-            bg.addSubview_(s)
-            return s
-
-        def lbl(text, parent, x, yv, w=130):
+        def lbl(text, x, yv, w=130, dark=True):
             l = NSTextField.alloc().initWithFrame_(NSMakeRect(x, yv, w, 16))
             l.setStringValue_(text)
             l.setEditable_(False)
             l.setBordered_(False)
             l.setBackgroundColor_(NSColor.clearColor())
-            l.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(0.7, 1.0))
+            color = NSColor.colorWithCalibratedWhite_alpha_(0.2, 1.0) if dark else NSColor.colorWithCalibratedWhite_alpha_(0.5, 1.0)
+            l.setTextColor_(color)
             l.setFont_(NSFont.systemFontOfSize_(11))
-            parent.addSubview_(l)
+            v.addSubview_(l)
 
-        def secure(val, parent, x, yv, w=220):
+        def secure(val, x, yv, w=240):
             f = NSSecureTextField.alloc().initWithFrame_(NSMakeRect(x, yv, w, 22))
             f.setStringValue_(val)
             f.setFont_(NSFont.systemFontOfSize_(11))
-            parent.addSubview_(f)
+            v.addSubview_(f)
             return f
 
-        def plain(val, parent, x, yv, w=220):
+        def plain(val, x, yv, w=240):
             f = NSTextField.alloc().initWithFrame_(NSMakeRect(x, yv, w, 22))
             f.setStringValue_(val)
             f.setFont_(NSFont.systemFontOfSize_(11))
-            parent.addSubview_(f)
+            v.addSubview_(f)
             return f
 
-        # API Keys
-        s1 = sec("API Keys", y, h=210)
-        lbl("OpenRouter", s1, 16, 140)
-        fields["or"] = secure(self.settings.get("openrouter_api_key", ""), s1, 110, 138)
-        lbl("ElevenLabs", s1, 16, 105)
-        fields["el"] = secure(self.settings.get("elevenlabs_api_key", ""), s1, 110, 103)
-        lbl("OpenAI", s1, 16, 70)
-        fields["oa"] = secure(self.settings.get("openai_api_key", ""), s1, 110, 68)
-        lbl("Groq", s1, 16, 35)
-        fields["gq"] = secure(self.settings.get("groq_api_key", ""), s1, 110, 33)
-        y -= 230
+        lbl("API Keys", 20, y, w=200)
+        y -= 26
+        lbl("OpenRouter", 20, y, dark=False)
+        fields["or"] = secure(self.settings.get("openrouter_api_key", ""), 120, y - 2)
+        y -= 28
+        lbl("ElevenLabs", 20, y, dark=False)
+        fields["el"] = secure(self.settings.get("elevenlabs_api_key", ""), 120, y - 2)
+        y -= 28
+        lbl("OpenAI", 20, y, dark=False)
+        fields["oa"] = secure(self.settings.get("openai_api_key", ""), 120, y - 2)
+        y -= 28
+        lbl("Groq", 20, y, dark=False)
+        fields["gq"] = secure(self.settings.get("groq_api_key", ""), 120, y - 2)
+        y -= 36
 
-        # Providers
-        s2 = sec("Providers", y, h=130)
-        lbl("STT", s2, 16, 90)
-        fields["stt"] = plain(self.settings.get("stt_provider", "elevenlabs"), s2, 110, 88, w=120)
-        lbl("Interpreter", s2, 16, 55)
-        fields["interp"] = plain(self.settings.get("interpreter_provider", "openrouter"), s2, 110, 53, w=120)
-        lbl("Model", s2, 16, 20)
-        fields["model"] = plain(self.settings.get("openrouter_model", "google/gemini-flash-1.5"), s2, 110, 18, w=240)
-        y -= 150
+        lbl("Providers", 20, y, w=200)
+        y -= 26
+        lbl("STT", 20, y, dark=False)
+        fields["stt"] = plain(self.settings.get("stt_provider", "elevenlabs"), 120, y - 2, w=120)
+        y -= 28
+        lbl("Interpreter", 20, y, dark=False)
+        fields["interp"] = plain(self.settings.get("interpreter_provider", "openrouter"), 120, y - 2, w=120)
+        y -= 28
+        lbl("Model", 20, y, dark=False)
+        fields["model"] = plain(self.settings.get("openrouter_model", "google/gemini-flash-1.5"), 120, y - 2, w=250)
+        y -= 36
 
-        # Hotkey
-        s3 = sec("Hotkey", y, h=70)
-        lbl("Current", s3, 16, 30)
-        fields["hk"] = plain(self.settings.get("hotkey", "alt_r"), s3, 110, 28, w=120)
+        lbl("Hotkey", 20, y, w=200)
+        y -= 26
+        lbl("Key name", 20, y, dark=False)
+        fields["hk"] = plain(self.settings.get("hotkey", "alt_r"), 120, y - 2, w=120)
+        y -= 36
 
-        rec_btn = NSButton.alloc().initWithFrame_(NSMakeRect(240, 28, 120, 24))
-        rec_btn.setTitle_("Record Key")
-        rec_btn.setBezelStyle_(1)
-        rec_btn.setTarget_(self)
-        rec_btn.setAction_("startRecordKey:")
-        s3.addSubview_(rec_btn)
-        y -= 90
+        lbl("Options", 20, y, w=200)
+        y -= 26
+        b1 = NSButton.alloc().initWithFrame_(NSMakeRect(20, y - 2, 100, 20))
+        b1.setButtonType_(NSSwitchButton)
+        b1.setTitle_("Cleanup")
+        b1.setState_(1 if self.settings.get("cleanup_enabled", True) else 0)
+        b1.setFont_(NSFont.systemFontOfSize_(11))
+        v.addSubview_(b1)
+        fields["clean"] = b1
 
-        # Options
-        s4 = sec("Options", y, h=70)
+        b2 = NSButton.alloc().initWithFrame_(NSMakeRect(140, y - 2, 100, 20))
+        b2.setButtonType_(NSSwitchButton)
+        b2.setTitle_("Paste")
+        b2.setState_(1 if self.settings.get("use_paste", True) else 0)
+        b2.setFont_(NSFont.systemFontOfSize_(11))
+        v.addSubview_(b2)
+        fields["paste"] = b2
+        y -= 40
 
-        def tgl(text, parent, x, yv, checked, key):
-            b = NSButton.alloc().initWithFrame_(NSMakeRect(x, yv, 130, 20))
-            b.setButtonType_(NSSwitchButton)
-            b.setTitle_(text)
-            b.setState_(1 if checked else 0)
-            b.setFont_(NSFont.systemFontOfSize_(11))
-            parent.addSubview_(b)
-            fields[key] = b
-            return b
-
-        tgl("Cleanup", s4, 16, 25, self.settings.get("cleanup_enabled", True), "clean")
-        tgl("Paste", s4, 150, 25, self.settings.get("use_paste", True), "paste")
-        y -= 90
-
-        save_btn = NSButton.alloc().initWithFrame_(NSMakeRect(160, 20, 100, 28))
+        save_btn = NSButton.alloc().initWithFrame_(NSMakeRect(150, y, 100, 28))
         save_btn.setTitle_("Save")
         save_btn.setBezelStyle_(1)
         save_btn.setTarget_(self)
         save_btn.setAction_("savePrefs:")
-        bg.addSubview_(save_btn)
+        v.addSubview_(save_btn)
 
         self._pref_win = win
         self._pref_fields = fields
         win.makeKeyAndOrderFront_(None)
-
-    def startRecordKey_(self, sender):
-        alert = NSAlert.alloc().init()
-        alert.setMessageText_("Record Hotkey")
-        alert.setInformativeText_("Press the key you want to use as your hotkey...")
-        alert.addButtonWithTitle_("Cancel")
-
-        self._record_key_window = alert.window()
-        self._recorded_key = None
-        self._key_listener = None
-
-        def on_press(key):
-            try:
-                self._recorded_key = key.name if hasattr(key, 'name') and key.name else str(key.char)
-            except Exception:
-                self._recorded_key = str(key)
-            if self._key_listener:
-                self._key_listener.stop()
-            try:
-                self._record_key_window.orderOut_(None)
-            except Exception:
-                pass
-            if self._recorded_key and hasattr(self, '_pref_fields') and self._pref_fields:
-                self._pref_fields["hk"].setStringValue_(self._recorded_key)
-                notify("Listen", f"Hotkey set to: {self._recorded_key}")
-
-        from pynput import keyboard
-        self._key_listener = keyboard.Listener(on_press=on_press)
-        self._key_listener.start()
-
-        result = alert.runModal()
-        if self._key_listener:
-            self._key_listener.stop()
-            self._key_listener = None
 
     def savePrefs_(self, sender):
         f = self._pref_fields
