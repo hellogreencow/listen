@@ -1,6 +1,7 @@
 """Listen — Fast voice-to-text for macOS.
 
-Simple menubar app. No dock icon. Hold key → record → AI transcribe → paste.
+Floating pill (primary visible UI) + menubar (menu access).
+Menubar is invisible on some Macs, so the pill guarantees visibility.
 """
 
 import os
@@ -20,11 +21,15 @@ from AppKit import (
     NSBox,
     NSColor,
     NSFont,
+    NSFontAttributeName,
+    NSForegroundColorAttributeName,
     NSMakeRect,
     NSMenu,
     NSMenuItem,
+    NSScreen,
     NSSecureTextField,
     NSStatusBar,
+    NSString,
     NSTextField,
     NSUserNotification,
     NSUserNotificationCenter,
@@ -101,31 +106,52 @@ def detect_mode() -> str:
     return "default"
 
 
-# ── Preferences View ─────────────────────────────────────
+NSFloatingWindowLevel = 3
+NSWindowCollectionBehaviorCanJoinAllSpaces = 1 << 0
+NSWindowCollectionBehaviorStationary = 1 << 4
 
-class _SectionView(NSView):
-    """Rounded card-like section for preferences."""
 
-    def initWithFrame_title_(self, frame, title):
-        self = objc.super(_SectionView, self).initWithFrame_(frame)
+class _PillView(NSView):
+    """Minimal pill: plain text, no dots, no emoji."""
+
+    def initWithFrame_(self, frame):
+        self = objc.super(_PillView, self).initWithFrame_(frame)
         if self is None:
             return None
+        self.label_text = "voice"
+        self.recording = False
         self.setWantsLayer_(True)
-        self.layer().setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(0.12, 1.0).CGColor())
-        self.layer().setCornerRadius_(10.0)
-        self.layer().setBorderWidth_(0.5)
-        self.layer().setBorderColor_(NSColor.colorWithCalibratedWhite_alpha_(0.25, 1.0).CGColor())
-
-        # Title label
-        title_lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(16, frame.size.height - 30, 200, 20))
-        title_lbl.setStringValue_(title)
-        title_lbl.setEditable_(False)
-        title_lbl.setBordered_(False)
-        title_lbl.setBackgroundColor_(NSColor.clearColor())
-        title_lbl.setTextColor_(NSColor.whiteColor())
-        title_lbl.setFont_(NSFont.boldSystemFontOfSize_(11))
-        self.addSubview_(title_lbl)
         return self
+
+    def drawRect_(self, rect):
+        bounds = self.bounds()
+        path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+            bounds, 14.0, 14.0
+        )
+
+        if self.recording:
+            NSColor.colorWithCalibratedWhite_alpha_(0.22, 0.95).setFill()
+        else:
+            NSColor.colorWithCalibratedWhite_alpha_(0.15, 0.92).setFill()
+        path.fill()
+
+        if self.recording:
+            text_color = NSColor.colorWithCalibratedRed_green_blue_alpha_(
+                1.0, 0.75, 0.35, 1.0
+            )
+        else:
+            text_color = NSColor.whiteColor()
+
+        attrs = {
+            NSFontAttributeName: NSFont.systemFontOfSize_(13),
+            NSForegroundColorAttributeName: text_color,
+        }
+        text = NSString.stringWithString_(self.label_text)
+        text.drawAtPoint_withAttributes_((14, bounds.size.height / 2 - 8), attrs)
+
+    def rightMouseDown_(self, event):
+        if hasattr(self, "delegate") and self.delegate:
+            self.delegate.showContextMenu_(event)
 
 
 # ── App Delegate ─────────────────────────────────────────
@@ -147,6 +173,9 @@ class AppDelegate(NSObject):
         self.current_mode = "default"
         self.status_item = None
 
+        self._window: Optional[NSWindow] = None
+        self._pill_view: Optional[_PillView] = None
+
         self.init_providers()
         sounds.set_enabled(self.settings.get("sound_enabled", False))
         self.start_hotkey()
@@ -154,6 +183,67 @@ class AppDelegate(NSObject):
 
     def applicationDidFinishLaunching_(self, notification):
         self.build_menu()
+        self.build_pill()
+
+    # ── Pill ───────────────────────────────────────────────
+
+    def build_pill(self):
+        screens = NSScreen.screens()
+        screen = NSScreen.mainScreen() or (screens[0] if screens else None)
+        if screen is None:
+            return
+
+        frame = screen.visibleFrame()
+        w, h = 100, 28
+        x = frame.origin.x + frame.size.width - w - 16
+        y = frame.origin.y + frame.size.height - h - 8
+
+        self._window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(x, y, w, h),
+            0,
+            2,
+            False,
+        )
+        self._window.setLevel_(NSFloatingWindowLevel)
+        self._window.setBackgroundColor_(NSColor.clearColor())
+        self._window.setOpaque_(False)
+        self._window.setHasShadow_(True)
+        self._window.setCollectionBehavior_(
+            NSWindowCollectionBehaviorCanJoinAllSpaces
+            | NSWindowCollectionBehaviorStationary
+        )
+        self._window.setIgnoresMouseEvents_(False)
+
+        self._pill_view = _PillView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
+        self._pill_view.delegate = self
+        self._window.setContentView_(self._pill_view)
+        self._window.orderFront_(None)
+
+    def setPillLabel_(self, label):
+        try:
+            if self._pill_view:
+                self._pill_view.label_text = str(label)
+                self._pill_view.setNeedsDisplay_(True)
+        except Exception:
+            pass
+
+    def setPillRecording_(self, recording):
+        try:
+            if self._pill_view:
+                self._pill_view.recording = bool(recording)
+                self._pill_view.setNeedsDisplay_(True)
+        except Exception:
+            pass
+
+    def set_pill_label(self, label: str) -> None:
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "setPillLabel_:", label, False,
+        )
+
+    def set_pill_recording(self, recording: bool) -> None:
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "setPillRecording_:", recording, False,
+        )
 
     # ── Menu ───────────────────────────────────────────────
 
@@ -183,6 +273,12 @@ class AppDelegate(NSObject):
         m.setTarget_(self)
         menu.addItem_(m)
         return m
+
+    def showContextMenu_(self, event):
+        if self.status_item and self.status_item.menu():
+            NSMenu.popUpContextMenu_withEvent_forView_(
+                self.status_item.menu(), event, self._pill_view
+            )
 
     def sync_titles(self):
         s = self.settings
@@ -238,12 +334,16 @@ class AppDelegate(NSObject):
         self.record_start_time = time.time()
         self.current_mode = detect_mode()
         self.status_item.button().setTitle_("recording")
+        self.set_pill_label("recording")
+        self.set_pill_recording(True)
         try:
             self.recorder.start()
         except Exception as e:
             log(f"recorder.start() failed: {e}")
             self.recording = False
             self.status_item.button().setTitle_("voice")
+            self.set_pill_label("voice")
+            self.set_pill_recording(False)
             notify("Listen", f"Recording failed: {e}")
 
     def on_release(self):
@@ -258,6 +358,8 @@ class AppDelegate(NSObject):
         except Exception as e:
             log(f"process error: {e}")
             self.status_item.button().setTitle_("voice")
+            self.set_pill_label("voice")
+            self.set_pill_recording(False)
 
     def _do_process(self):
         t0 = time.perf_counter()
@@ -267,10 +369,14 @@ class AppDelegate(NSObject):
         except Exception as e:
             log(f"recorder.stop() failed: {e}")
             self.status_item.button().setTitle_("voice")
+            self.set_pill_label("voice")
+            self.set_pill_recording(False)
             return
 
         sounds.stop()
         self.status_item.button().setTitle_("thinking...")
+        self.set_pill_label("thinking...")
+        self.set_pill_recording(False)
 
         self.current_mode = detect_mode()
 
@@ -282,6 +388,7 @@ class AppDelegate(NSObject):
         except Exception as e:
             log(f"transcription failed: {e}")
             self.status_item.button().setTitle_("voice")
+            self.set_pill_label("voice")
             return
 
         if self.interpreter and text:
@@ -317,6 +424,7 @@ class AppDelegate(NSObject):
 
         total = (time.perf_counter() - t0) * 1000
         self.status_item.button().setTitle_("voice")
+        self.set_pill_label("voice")
         log(f"done — total after release: {total:.0f}ms")
 
     # ── Menu Actions ───────────────────────────────────────
@@ -382,7 +490,6 @@ class AppDelegate(NSObject):
         win.setTitle_("Listen Preferences")
         win.center()
 
-        # Dark background
         bg = NSVisualEffectView.alloc().initWithFrame_(NSMakeRect(0, 0, 420, 520))
         bg.setMaterial_(8)
         bg.setBlendingMode_(1)
@@ -394,7 +501,7 @@ class AppDelegate(NSObject):
         fields = {}
 
         def sec(title, yv, h=100):
-            s = _SectionView.alloc().initWithFrame_title_(NSMakeRect(20, yv, 380, h), title)
+            s = _PillView.alloc().initWithFrame_title_(NSMakeRect(20, yv, 380, h), title)
             bg.addSubview_(s)
             return s
 
@@ -449,7 +556,6 @@ class AppDelegate(NSObject):
         lbl("Current", s3, 16, 30)
         fields["hk"] = plain(self.settings.get("hotkey", "alt_r"), s3, 110, 28, w=120)
 
-        # Record Key button
         rec_btn = NSButton.alloc().initWithFrame_(NSMakeRect(240, 28, 120, 24))
         rec_btn.setTitle_("Record Key")
         rec_btn.setBezelStyle_(1)
@@ -475,7 +581,6 @@ class AppDelegate(NSObject):
         tgl("Paste", s4, 150, 25, self.settings.get("use_paste", True), "paste")
         y -= 90
 
-        # Save button
         save_btn = NSButton.alloc().initWithFrame_(NSMakeRect(160, 20, 100, 28))
         save_btn.setTitle_("Save")
         save_btn.setBezelStyle_(1)
@@ -488,16 +593,12 @@ class AppDelegate(NSObject):
         win.makeKeyAndOrderFront_(None)
 
     def startRecordKey_(self, sender):
-        """Show a modal to capture the next keypress."""
         alert = NSAlert.alloc().init()
         alert.setMessageText_("Record Hotkey")
         alert.setInformativeText_("Press the key you want to use as your hotkey...")
         alert.addButtonWithTitle_("Cancel")
 
-        # Show alert non-blocking and capture key in background
         self._record_key_window = alert.window()
-
-        # Start a temporary key listener
         self._recorded_key = None
         self._key_listener = None
 
@@ -508,12 +609,10 @@ class AppDelegate(NSObject):
                 self._recorded_key = str(key)
             if self._key_listener:
                 self._key_listener.stop()
-            # Close alert
             try:
                 self._record_key_window.orderOut_(None)
             except Exception:
                 pass
-            # Update field
             if self._recorded_key and hasattr(self, '_pref_fields') and self._pref_fields:
                 self._pref_fields["hk"].setStringValue_(self._recorded_key)
                 notify("Listen", f"Hotkey set to: {self._recorded_key}")
@@ -522,7 +621,6 @@ class AppDelegate(NSObject):
         self._key_listener = keyboard.Listener(on_press=on_press)
         self._key_listener.start()
 
-        # Run alert modally - when user clicks Cancel or presses a key, the listener handles it
         result = alert.runModal()
         if self._key_listener:
             self._key_listener.stop()
