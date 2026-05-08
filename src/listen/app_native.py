@@ -208,7 +208,7 @@ class ListenApp(rumps.App):
         self.recording = True
         self.record_start_time = time.time()
         self.current_mode = detect_mode()
-        self.title = "Recording"
+        self.title = "listening..."
         try:
             self.recorder.start()
         except Exception as e:
