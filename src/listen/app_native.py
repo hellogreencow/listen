@@ -7,11 +7,9 @@ import os
 import subprocess
 import threading
 import time
-import traceback
 from pathlib import Path
 from typing import Optional
 
-import objc
 import rumps
 from AppKit import (
     NSAlert,
@@ -25,7 +23,6 @@ from AppKit import (
     NSWindow,
     NSButton,
     NSSwitchButton,
-    NSVisualEffectView,
     NSWorkspace,
 )
 from Foundation import NSObject
@@ -91,30 +88,6 @@ def detect_mode() -> str:
     return "default"
 
 
-class _SectionView(NSView):
-    """Rounded card for preferences."""
-
-    def initWithFrame_title_(self, frame, title):
-        self = objc.super(_SectionView, self).initWithFrame_(frame)
-        if self is None:
-            return None
-        self.setWantsLayer_(True)
-        self.layer().setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(0.12, 1.0).CGColor())
-        self.layer().setCornerRadius_(10.0)
-        self.layer().setBorderWidth_(0.5)
-        self.layer().setBorderColor_(NSColor.colorWithCalibratedWhite_alpha_(0.25, 1.0).CGColor())
-
-        lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(16, frame.size.height - 30, 200, 20))
-        lbl.setStringValue_(title)
-        lbl.setEditable_(False)
-        lbl.setBordered_(False)
-        lbl.setBackgroundColor_(NSColor.clearColor())
-        lbl.setTextColor_(NSColor.whiteColor())
-        lbl.setFont_(NSFont.boldSystemFontOfSize_(11))
-        self.addSubview_(lbl)
-        return self
-
-
 class ListenApp(rumps.App):
 
     def __init__(self):
@@ -128,6 +101,11 @@ class ListenApp(rumps.App):
         self.stt = None
         self.interpreter = None
         self.current_mode = "default"
+
+        self._pref_win = None
+        self._pref_fields = {}
+        self._record_key_listener = None
+        self._record_key_window = None
 
         self.init_providers()
         sounds.set_enabled(self.settings.get("sound_enabled", False))
@@ -242,7 +220,7 @@ class ListenApp(rumps.App):
             return
 
         sounds.stop()
-        self.title = "Thinking..."
+        self.title = "thinking..."
 
         self.current_mode = detect_mode()
 
@@ -353,20 +331,27 @@ class ListenApp(rumps.App):
     # ── Preferences ────────────────────────────────────────
 
     def show_prefs(self, sender):
+        # Kill any old window
+        if self._pref_win:
+            try:
+                self._pref_win.close()
+            except Exception:
+                pass
+            self._pref_win = None
+
         win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(0, 0, 400, 420), 15, 2, False,
+            NSMakeRect(0, 0, 400, 440), 15, 2, False,
         )
         win.setTitle_("Preferences")
         win.center()
 
-        # Simple solid background - no visual effects, no custom views
-        v = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 400, 420))
+        v = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 400, 440))
         v.setWantsLayer_(True)
-        v.layer().setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(0.95, 1.0).CGColor())
+        v.layer().setBackgroundColor_(NSColor.whiteColor().CGColor())
         win.setContentView_(v)
 
         fields = {}
-        y = 380
+        y = 400
 
         def lbl(text, x, yv, w=130, dark=True):
             l = NSTextField.alloc().initWithFrame_(NSMakeRect(x, yv, w, 16))
@@ -374,26 +359,25 @@ class ListenApp(rumps.App):
             l.setEditable_(False)
             l.setBordered_(False)
             l.setBackgroundColor_(NSColor.clearColor())
-            color = NSColor.colorWithCalibratedWhite_alpha_(0.2, 1.0) if dark else NSColor.colorWithCalibratedWhite_alpha_(0.5, 1.0)
-            l.setTextColor_(color)
-            l.setFont_(NSFont.systemFontOfSize_(11))
+            l.setTextColor_(NSColor.blackColor() if dark else NSColor.darkGrayColor())
+            l.setFont_(NSFont.systemFontOfSize_(12) if dark else NSFont.systemFontOfSize_(11))
             v.addSubview_(l)
 
-        def secure(val, x, yv, w=240):
+        def secure(val, x, yv, w=250):
             f = NSSecureTextField.alloc().initWithFrame_(NSMakeRect(x, yv, w, 22))
             f.setStringValue_(val)
             f.setFont_(NSFont.systemFontOfSize_(11))
             v.addSubview_(f)
             return f
 
-        def plain(val, x, yv, w=240):
+        def plain(val, x, yv, w=250):
             f = NSTextField.alloc().initWithFrame_(NSMakeRect(x, yv, w, 22))
             f.setStringValue_(val)
             f.setFont_(NSFont.systemFontOfSize_(11))
             v.addSubview_(f)
             return f
 
-        lbl("API Keys", 20, y, w=200)
+        lbl("API Keys", 20, y)
         y -= 26
         lbl("OpenRouter", 20, y, dark=False)
         fields["or"] = secure(self.settings.get("openrouter_api_key", ""), 120, y - 2)
@@ -408,7 +392,7 @@ class ListenApp(rumps.App):
         fields["gq"] = secure(self.settings.get("groq_api_key", ""), 120, y - 2)
         y -= 36
 
-        lbl("Providers", 20, y, w=200)
+        lbl("Providers", 20, y)
         y -= 26
         lbl("STT", 20, y, dark=False)
         fields["stt"] = plain(self.settings.get("stt_provider", "elevenlabs"), 120, y - 2, w=120)
@@ -420,13 +404,20 @@ class ListenApp(rumps.App):
         fields["model"] = plain(self.settings.get("openrouter_model", "google/gemini-flash-1.5"), 120, y - 2, w=250)
         y -= 36
 
-        lbl("Hotkey", 20, y, w=200)
+        lbl("Hotkey", 20, y)
         y -= 26
         lbl("Key name", 20, y, dark=False)
         fields["hk"] = plain(self.settings.get("hotkey", "alt_r"), 120, y - 2, w=120)
+
+        rec_btn = NSButton.alloc().initWithFrame_(NSMakeRect(260, y - 2, 120, 24))
+        rec_btn.setTitle_("Record Key")
+        rec_btn.setBezelStyle_(1)
+        rec_btn.setTarget_(self)
+        rec_btn.setAction_("doRecordKey:")
+        v.addSubview_(rec_btn)
         y -= 36
 
-        lbl("Options", 20, y, w=200)
+        lbl("Options", 20, y)
         y -= 26
         b1 = NSButton.alloc().initWithFrame_(NSMakeRect(20, y - 2, 100, 20))
         b1.setButtonType_(NSSwitchButton)
@@ -456,6 +447,117 @@ class ListenApp(rumps.App):
         self._pref_fields = fields
         win.makeKeyAndOrderFront_(None)
 
+    # ── Record Key (thread-safe) ───────────────────────────
+
+    def doRecordKey_(self, sender):
+        """Open a capture window. Key press is captured by pynput and dispatched to main thread."""
+        # Close old capture window if any
+        if self._record_key_window:
+            try:
+                self._record_key_window.orderOut_(None)
+            except Exception:
+                pass
+            self._record_key_window = None
+        if self._record_key_listener:
+            try:
+                self._record_key_listener.stop()
+            except Exception:
+                pass
+            self._record_key_listener = None
+
+        # Create simple capture window
+        win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(0, 0, 300, 120), 1, 2, False,
+        )
+        win.setTitle_("Record Key")
+        win.center()
+
+        v = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 300, 120))
+        v.setWantsLayer_(True)
+        v.layer().setBackgroundColor_(NSColor.whiteColor().CGColor())
+        win.setContentView_(v)
+
+        lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(20, 60, 260, 20))
+        lbl.setStringValue_("Press any key...")
+        lbl.setEditable_(False)
+        lbl.setBordered_(False)
+        lbl.setBackgroundColor_(NSColor.clearColor())
+        lbl.setTextColor_(NSColor.blackColor())
+        lbl.setFont_(NSFont.systemFontOfSize_(14))
+        lbl.setAlignment_(1)  # center
+        v.addSubview_(lbl)
+
+        cancel = NSButton.alloc().initWithFrame_(NSMakeRect(100, 20, 100, 24))
+        cancel.setTitle_("Cancel")
+        cancel.setBezelStyle_(1)
+        cancel.setTarget_(self)
+        cancel.setAction_("cancelRecordKey:")
+        v.addSubview_(cancel)
+
+        self._record_key_window = win
+        self._record_key_label = lbl
+        win.makeKeyAndOrderFront_(None)
+
+        # Start pynput listener
+        from pynput import keyboard
+
+        def on_press(key):
+            try:
+                name = key.name if hasattr(key, 'name') and key.name else str(key.char)
+            except Exception:
+                name = str(key)
+            # Dispatch to main thread - NEVER touch UI from pynput thread
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "finishRecordKey_:", name, False,
+            )
+
+        self._record_key_listener = keyboard.Listener(on_press=on_press)
+        self._record_key_listener.start()
+
+    def cancelRecordKey_(self, sender):
+        if self._record_key_listener:
+            try:
+                self._record_key_listener.stop()
+            except Exception:
+                pass
+            self._record_key_listener = None
+        if self._record_key_window:
+            try:
+                self._record_key_window.orderOut_(None)
+            except Exception:
+                pass
+            self._record_key_window = None
+
+    def finishRecordKey_(self, key_name):
+        """Called on main thread after key is pressed."""
+        # Stop listener
+        if self._record_key_listener:
+            try:
+                self._record_key_listener.stop()
+            except Exception:
+                pass
+            self._record_key_listener = None
+
+        # Close capture window
+        if self._record_key_window:
+            try:
+                self._record_key_window.orderOut_(None)
+            except Exception:
+                pass
+            self._record_key_window = None
+
+        # Update preferences field
+        if key_name and self._pref_fields and "hk" in self._pref_fields:
+            self._pref_fields["hk"].setStringValue_(key_name)
+
+        # Save immediately
+        self.settings["hotkey"] = key_name
+        save(self.settings)
+        self.start_hotkey()
+        notify("Listen", f"Hotkey set to: {key_name}")
+
+    # ── Save Preferences ───────────────────────────────────
+
     def savePrefs_(self, sender):
         f = self._pref_fields
         self.settings["openrouter_api_key"] = f["or"].stringValue().strip()
@@ -473,7 +575,11 @@ class ListenApp(rumps.App):
         self.sync_titles()
         self.start_hotkey()
         if self._pref_win:
-            self._pref_win.close()
+            try:
+                self._pref_win.close()
+            except Exception:
+                pass
+            self._pref_win = None
         notify("Listen", "Preferences saved")
 
 

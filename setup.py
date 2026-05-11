@@ -16,6 +16,7 @@ OPTIONS = {
         "requests",
         "numpy",
         "pynput",
+        "rumps",
         "listen",
         "listen.providers",
     ],
