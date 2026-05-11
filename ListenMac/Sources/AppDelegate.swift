@@ -21,6 +21,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         reloadProviders()
         startHotkey()
         ensurePermissionsOnFirstRun()
+        observeWake()
+        prewarmConnections()
+    }
+
+    /// On long sleep/wake cycles macOS sometimes quiets global event monitors.
+    /// Re-arm the hotkey when the system wakes so it's responsive immediately.
+    private func observeWake() {
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.hotkey.start(keyName: self.settings.hotkey)
+        }
+    }
+
+    /// Pre-establish TLS connections to the configured provider hosts so the
+    /// first hold-to-record doesn't pay handshake latency (~100-200 ms).
+    private func prewarmConnections() {
+        let hosts: [String] = [
+            "https://api.elevenlabs.io",
+            "https://api.openai.com",
+            "https://api.groq.com",
+            "https://openrouter.ai",
+        ]
+        for host in hosts {
+            guard let url = URL(string: host) else { continue }
+            Task.detached {
+                var req = URLRequest(url: url)
+                req.httpMethod = "HEAD"
+                req.timeoutInterval = 5
+                _ = try? await URLSession.shared.data(for: req)
+            }
+        }
     }
 
     // MARK: - Status bar
@@ -35,8 +70,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let button = statusItem.button else { return }
         switch state {
         case .idle:      button.title = "Listen"
-        case .listening: button.title = "● listening…"
-        case .thinking:  button.title = "thinking…"
+        case .listening: button.title = "listening..."
+        case .thinking:  button.title = "thinking..."
         }
     }
 
@@ -52,6 +87,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let reveal = NSMenuItem(title: "Reveal Config File", action: #selector(revealConfig), keyEquivalent: "")
         reveal.target = self
         menu.addItem(reveal)
+        let grant = NSMenuItem(title: "Grant Accessibility…", action: #selector(grantAccessibility), keyEquivalent: "")
+        grant.target = self
+        menu.addItem(grant)
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit Listen", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quit)
@@ -82,23 +120,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func ensurePermissionsOnFirstRun() {
-        // Microphone: prompts automatically when AVAudioRecorder starts.
+        // Microphone only — its prompt happens organically the first time
+        // AVAudioRecorder records, and lives in a different pane than
+        // Accessibility so it doesn't steal focus from the user's app.
         AVCaptureDevice.requestAccess(for: .audio) { _ in }
 
-        // Accessibility: required for NSEvent.addGlobalMonitorForEvents to
-        // actually deliver keyboard events on macOS 10.15+. This is the
-        // same permission Superwhisper uses (and labels "Needed to paste").
-        // Passing prompt=true shows the system dialog the first time only.
+        // DO NOT auto-prompt or auto-open System Settings for Accessibility.
+        // Every time this launched on a cdhash mismatch it stole focus away
+        // from the user's frontmost app, which (a) annoyed them and (b)
+        // caused synth Cmd+V to paste into System Settings instead of their
+        // actual focused window. If the user needs to (re-)grant, they can
+        // use the "Grant Accessibility…" menu item.
+        let trusted = AXIsProcessTrusted()
+        NSLog("[Listen] startup: AXIsProcessTrusted = \(trusted)")
+    }
+
+    @objc private func grantAccessibility() {
         let prompt = "AXTrustedCheckOptionPrompt" as CFString
-        let opts = [prompt: true] as CFDictionary
-        let trusted = AXIsProcessTrustedWithOptions(opts)
-        if !trusted {
-            NSLog("[Listen] Accessibility not granted; hotkey events will be silently dropped until granted")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                NSWorkspace.shared.open(URL(string:
-                    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
-            }
-        }
+        _ = AXIsProcessTrustedWithOptions([prompt: true] as CFDictionary)
+        NSWorkspace.shared.open(URL(string:
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
     }
 
     // MARK: - Actions
@@ -164,15 +205,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func process(_ url: URL?) async {
         defer { Task { @MainActor in self.state = .idle } }
-        guard let url, let stt else { return }
+        guard let url, let stt else {
+            NSLog("[Listen] process: no url or no stt (url=\(url?.path ?? "nil"))")
+            return
+        }
+        let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? Int ?? -1
+        NSLog("[Listen] process: audio file=\(url.lastPathComponent) bytes=\(size)")
         do {
             let raw = try await stt.transcribe(url)
+            NSLog("[Listen] process: stt returned \(raw.count) chars: \(raw.prefix(80))")
             var text = raw
             if let interpreter, !text.isEmpty {
-                text = (try? await interpreter.interpret(text, prompt: settings.cleanup_prompt)) ?? text
+                do {
+                    text = try await interpreter.interpret(text, prompt: settings.cleanup_prompt)
+                    NSLog("[Listen] process: interpreter returned \(text.count) chars")
+                } catch {
+                    NSLog("[Listen] interpreter failed: \(error.localizedDescription) — using raw")
+                }
             }
             try? FileManager.default.removeItem(at: url)
-            if text.isEmpty { return }
+            if text.isEmpty {
+                notify("Empty transcription — check microphone permission")
+                NSLog("[Listen] process: empty text, nothing to paste")
+                return
+            }
+            NSLog("[Listen] process: pasting \(text.count) chars")
             await MainActor.run {
                 Paster.paste(text, restoreClipboard: true)
             }

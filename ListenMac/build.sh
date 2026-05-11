@@ -72,14 +72,25 @@ if [[ -f Resources/Listen.icns ]]; then
 fi
 /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $APP_NAME" "$APP_PATH/Contents/Info.plist" >/dev/null
 
-# ─── 4. Sign with stable identity ───────────────────────────────────────────
-echo "→ Signing with '$CERT_NAME'…"
+# ─── 4. Sign with stable identity + cdhash-independent requirement ──────────
+# The designated requirement below makes macOS match this app by certificate
+# subject CN, NOT by cdhash. So TCC grants (Accessibility, Microphone, etc.)
+# survive every rebuild instead of being silently revoked.
+REQ_FILE="$(mktemp)"
+cat > "$REQ_FILE" <<EOF
+designated => identifier "$BUNDLE_ID" and certificate leaf[subject.CN] = "$CERT_NAME"
+EOF
+
+echo "→ Signing with '$CERT_NAME' (cert-pinned designated requirement)…"
 codesign --force --deep \
   --sign "$CERT_NAME" \
   --identifier "$BUNDLE_ID" \
+  --requirements "$REQ_FILE" \
   --timestamp=none \
   "$APP_PATH"
+rm -f "$REQ_FILE"
 
 codesign --verify --verbose "$APP_PATH" 2>&1 | sed 's/^/   /'
+codesign -d -r- "$APP_PATH" 2>&1 | grep "^designated" | sed 's/^/   DR: /'
 echo ""
 echo "✓ Built: $APP_PATH"
