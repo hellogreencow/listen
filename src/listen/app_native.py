@@ -610,27 +610,26 @@ class ListenApp(rumps.App):
 
 
 def main():
-    # Prompt for Accessibility permission if not already granted
+    # Check Accessibility permission but DON'T quit — app stays visible in menubar
     try:
-        options = {kAXTrustedCheckOptionPrompt: True}
-        if not AXIsProcessTrustedWithOptions(options):
+        if not AXIsProcessTrustedWithOptions(None):
+            # Show a one-time alert
             alert = NSAlert.alloc().init()
             alert.setMessageText_("Accessibility Permission Required")
             alert.setInformativeText_(
-                "Listen needs Accessibility permission to detect global hotkeys.\n\n"
-                "1. Click Open Settings below\n"
-                "2. Click the lock to make changes\n"
-                "3. Check the box next to Listen\n"
-                "4. Restart Listen"
+                "Listen needs Accessibility permission for global hotkeys.\n\n"
+                "1. Click Open Settings\n"
+                "2. Check the box next to Listen\n"
+                "3. Relaunch Listen"
             )
             alert.addButtonWithTitle_("Open Settings")
-            alert.addButtonWithTitle_("Quit")
+            alert.addButtonWithTitle_("Continue Anyway")
             if alert.runModal() == NSAlertFirstButtonReturn:
                 subprocess.run([
                     "open",
                     "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
                 ])
-            return
+            # App keeps running — hotkey just won't work until permission is granted
     except Exception:
         pass
     ListenApp().run()
