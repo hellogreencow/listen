@@ -25,7 +25,8 @@ from AppKit import (
     NSSwitchButton,
     NSWorkspace,
 )
-from Foundation import NSObject
+from ApplicationServices import AXIsProcessTrustedWithOptions, kAXTrustedCheckOptionPrompt
+from Foundation import NSObject, NSBundle
 from PyObjCTools.AppHelper import callAfter
 
 from . import sounds
@@ -609,6 +610,29 @@ class ListenApp(rumps.App):
 
 
 def main():
+    # Prompt for Accessibility permission if not already granted
+    try:
+        options = {kAXTrustedCheckOptionPrompt: True}
+        if not AXIsProcessTrustedWithOptions(options):
+            alert = NSAlert.alloc().init()
+            alert.setMessageText_("Accessibility Permission Required")
+            alert.setInformativeText_(
+                "Listen needs Accessibility permission to detect global hotkeys.\n\n"
+                "1. Click Open Settings below\n"
+                "2. Click the lock to make changes\n"
+                "3. Check the box next to Listen\n"
+                "4. Restart Listen"
+            )
+            alert.addButtonWithTitle_("Open Settings")
+            alert.addButtonWithTitle_("Quit")
+            if alert.runModal() == NSAlertFirstButtonReturn:
+                subprocess.run([
+                    "open",
+                    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+                ])
+            return
+    except Exception:
+        pass
     ListenApp().run()
 
 

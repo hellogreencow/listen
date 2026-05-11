@@ -23,6 +23,7 @@ OPTIONS = {
     "includes": [
         "pynput.keyboard._darwin",
         "pynput.mouse._darwin",
+        "ApplicationServices",
     ],
     "iconfile": "assets/Listen.icns",
     "plist": {
