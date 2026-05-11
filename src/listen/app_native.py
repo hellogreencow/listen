@@ -26,6 +26,7 @@ from AppKit import (
     NSWorkspace,
 )
 from Foundation import NSObject
+from PyObjCTools.AppHelper import callAfter
 
 from . import sounds
 from .hotkey import HotkeyListener
@@ -533,9 +534,7 @@ class ListenApp(rumps.App):
             except Exception:
                 name = str(key)
             # Dispatch to main thread - NEVER touch UI from pynput thread
-            self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                "finishRecordKey_:", name, False,
-            )
+            callAfter(self.finishRecordKey_, name)
 
         self._record_key_listener = keyboard.Listener(on_press=on_press)
         self._record_key_listener.start()
