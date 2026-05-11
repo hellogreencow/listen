@@ -34,6 +34,9 @@ OPTIONS = {
         "CFBundleIdentifier": "com.listen.app",
         "LSUIElement": True,
         "NSMicrophoneUsageDescription": "Listen records your voice for AI transcription.",
+        "NSInputMonitoringUsageDescription": "Listen needs to detect the hotkey you hold to record.",
+        "NSAccessibilityUsageDescription": "Listen pastes the transcribed text into the focused app.",
+        "NSAppleEventsUsageDescription": "Listen pastes text via system events when needed.",
     },
 }
 

@@ -1,8 +1,11 @@
 """Listen — Fast voice-to-text for macOS.
 
 Menubar-only via rumps. Zero pill. Zero emoji. Plain text only.
+All UI updates dispatched to main thread via callAfter.
+NO custom NSWindow/NSAlert/NSView — those crash inside py2app.
 """
 
+import json
 import os
 import subprocess
 import threading
@@ -11,23 +14,12 @@ from pathlib import Path
 from typing import Optional
 
 import rumps
-from AppKit import (
-    NSAlert,
-    NSAlertFirstButtonReturn,
-    NSColor,
-    NSFont,
-    NSMakeRect,
-    NSSecureTextField,
-    NSTextField,
-    NSView,
-    NSWindow,
-    NSButton,
-    NSSwitchButton,
-    NSWorkspace,
-)
-from ApplicationServices import AXIsProcessTrustedWithOptions, kAXTrustedCheckOptionPrompt
-from Foundation import NSObject, NSBundle
+from Foundation import NSWorkspace
 from PyObjCTools.AppHelper import callAfter
+
+ACCESSIBILITY_PANE = (
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+)
 
 from . import sounds
 from .hotkey import HotkeyListener
@@ -36,9 +28,20 @@ from .recorder import AudioRecorder
 from .settings import load, save
 from .typer import paste_text, type_text
 
-
 _DEBUG = os.environ.get("LISTEN_DEBUG", "0") == "1"
 LOG_PATH = Path.home() / ".listen" / "debug.log"
+
+HOTKEY_PRESETS = [
+    ("Right Control", "ctrl_r"),
+    ("Right Option", "alt_r"),
+    ("F13", "f13"),
+    ("F14", "f14"),
+    ("F15", "f15"),
+    ("Left Control", "ctrl"),
+    ("Left Option", "alt"),
+    ("Left Command", "cmd"),
+    ("Right Command", "cmd_r"),
+]
 
 
 def log(msg: str) -> None:
@@ -57,6 +60,22 @@ def notify(title: str, subtitle: str) -> None:
         rumps.notification(title, "", subtitle)
     except Exception:
         pass
+
+
+def _set_title(app, text: str) -> None:
+    """Always run on main thread."""
+    app.title = text
+
+
+def _sync_menu_items(app) -> None:
+    """Always run on main thread."""
+    s = app.settings
+    app._mi_stt.title = f"STT: {s.get('stt_provider', 'elevenlabs')}"
+    app._mi_interp.title = f"Interpreter: {s.get('interpreter_provider', 'openrouter')}"
+    app._mi_cleanup.title = f"Cleanup: {'on' if s.get('cleanup_enabled', True) else 'off'}"
+    app._mi_paste.title = f"Paste mode: {'paste' if s.get('use_paste', True) else 'type'}"
+    hk = s.get("hotkey", "ctrl_r")
+    app._mi_hk.title = f"Hotkey: {hk}"
 
 
 APP_MODES = {
@@ -104,48 +123,86 @@ class ListenApp(rumps.App):
         self.interpreter = None
         self.current_mode = "default"
 
-        self._pref_win = None
-        self._pref_fields = {}
-        self._record_key_listener = None
-        self._record_key_window = None
-
         self.init_providers()
         sounds.set_enabled(self.settings.get("sound_enabled", False))
         self.start_hotkey()
         self.build_menu()
-        # Startup notification
-        hotkey_display = self.settings.get("hotkey", "ctrl_r").replace("_", " ").title()
-        notify("Listen", f"Hold {hotkey_display} to record")
+
+        hk = self.settings.get("hotkey", "ctrl_r").replace("_", " ").title()
+        notify("Listen", f"Hold {hk} to record")
+
+    # ── Menu construction ──────────────────────────────────
 
     def build_menu(self):
+        # STT submenu
+        stt_items = []
+        for name, key in [("ElevenLabs", "elevenlabs"), ("OpenAI", "openai"),
+                          ("Groq", "groq"), ("Local Whisper", "local")]:
+            mi = rumps.MenuItem(name, callback=self.set_stt)
+            mi._provider = key
+            stt_items.append(mi)
+        self._mi_stt_parent = rumps.MenuItem("STT: ...")
+        self._mi_stt_parent.menu = stt_items
+
+        # Interpreter submenu
+        interp_items = []
+        for name, key in [("OpenRouter", "openrouter"), ("OpenAI", "openai"),
+                          ("Groq", "groq")]:
+            mi = rumps.MenuItem(name, callback=self.set_interp)
+            mi._provider = key
+            interp_items.append(mi)
+        self._mi_interp_parent = rumps.MenuItem("Interpreter: ...")
+        self._mi_interp_parent.menu = interp_items
+
+        # Hotkey submenu
+        hk_items = []
+        for label, key in HOTKEY_PRESETS:
+            mi = rumps.MenuItem(label, callback=self.set_hotkey)
+            mi._hotkey = key
+            hk_items.append(mi)
+        self._mi_hk_parent = rumps.MenuItem("Hotkey: ...")
+        self._mi_hk_parent.menu = hk_items
+
+        # Mode submenu
+        mode_items = []
+        for label, key in [("Auto", "auto"), ("Default", "default"), ("Email", "email"),
+                           ("Slack", "slack"), ("Code", "code"), ("Notes", "notes"),
+                           ("Casual", "casual")]:
+            mi = rumps.MenuItem(label, callback=self.set_mode)
+            mi._mode = key
+            mode_items.append(mi)
+        self._mi_mode_parent = rumps.MenuItem("Mode: auto")
+        self._mi_mode_parent.menu = mode_items
+
         self._mi_record = rumps.MenuItem("Record", callback=self.do_record)
         self._mi_test = rumps.MenuItem("Test Recording", callback=self.test_record)
-        self._mi_mode = rumps.MenuItem("Mode: auto", callback=self.cycle_mode)
-        self._mi_stt = rumps.MenuItem("STT: elevenlabs", callback=self.choose_stt)
-        self._mi_interp = rumps.MenuItem("Interpreter: openrouter", callback=self.choose_interp)
         self._mi_cleanup = rumps.MenuItem("Toggle Cleanup", callback=self.toggle_cleanup)
-        self._mi_prefs = rumps.MenuItem("Preferences...", callback=self.show_prefs)
+        self._mi_paste = rumps.MenuItem("Toggle Paste Mode", callback=self.toggle_paste)
+        self._mi_prefs = rumps.MenuItem("Preferences…", callback=self.show_prefs)
+        self._mi_open_config = rumps.MenuItem("Open Config Folder", callback=self.open_config)
+        self._mi_reload = rumps.MenuItem("Reload Config", callback=self.reload_config)
+        self._mi_grant = rumps.MenuItem("Re-prompt Accessibility", callback=self.prompt_accessibility)
         self._mi_quit = rumps.MenuItem("Quit", callback=self.quit_app)
+
         self.menu = [
             self._mi_record,
             self._mi_test,
             None,
-            self._mi_mode,
-            self._mi_stt,
-            self._mi_interp,
+            self._mi_mode_parent,
+            self._mi_stt_parent,
+            self._mi_interp_parent,
+            self._mi_hk_parent,
             None,
             self._mi_cleanup,
+            self._mi_paste,
             None,
             self._mi_prefs,
+            self._mi_open_config,
+            self._mi_reload,
+            self._mi_grant,
             self._mi_quit,
         ]
-        self.sync_titles()
-
-    def sync_titles(self):
-        s = self.settings
-        self._mi_stt.title = f"STT: {s.get('stt_provider', 'elevenlabs')}"
-        self._mi_interp.title = f"Interpreter: {s.get('interpreter_provider', 'openrouter')}"
-        self._mi_mode.title = f"Mode: {self.current_mode}"
+        callAfter(_sync_menu_items, self)
 
     # ── Providers ──────────────────────────────────────────
 
@@ -195,13 +252,13 @@ class ListenApp(rumps.App):
         self.recording = True
         self.record_start_time = time.time()
         self.current_mode = detect_mode()
-        self.title = "listening..."
+        callAfter(_set_title, self, "listening...")
         try:
             self.recorder.start()
         except Exception as e:
             log(f"recorder.start() failed: {e}")
             self.recording = False
-            self.title = "Listen"
+            callAfter(_set_title, self, "Listen")
             notify("Listen", f"Recording failed: {e}")
 
     def on_release(self):
@@ -215,7 +272,7 @@ class ListenApp(rumps.App):
             self._do_process()
         except Exception as e:
             log(f"process error: {e}")
-            self.title = "Listen"
+            callAfter(_set_title, self, "Listen")
 
     def _do_process(self):
         t0 = time.perf_counter()
@@ -224,11 +281,11 @@ class ListenApp(rumps.App):
             path = self.recorder.stop()
         except Exception as e:
             log(f"recorder.stop() failed: {e}")
-            self.title = "Listen"
+            callAfter(_set_title, self, "Listen")
             return
 
         sounds.stop()
-        self.title = "thinking..."
+        callAfter(_set_title, self, "thinking...")
 
         self.current_mode = detect_mode()
 
@@ -239,7 +296,7 @@ class ListenApp(rumps.App):
             log(f"transcribed in {(t2-t1)*1000:.0f}ms: {text[:60]}...")
         except Exception as e:
             log(f"transcription failed: {e}")
-            self.title = "Listen"
+            callAfter(_set_title, self, "Listen")
             return
 
         if self.interpreter and text:
@@ -274,23 +331,22 @@ class ListenApp(rumps.App):
                 pass
 
         total = (time.perf_counter() - t0) * 1000
-        self.title = "Listen"
+        callAfter(_set_title, self, "Listen")
         log(f"done — total after release: {total:.0f}ms")
 
-    # ── Menu Actions ───────────────────────────────────────
+    # ── Menu actions ───────────────────────────────────────
 
     def do_record(self, sender):
         if not self.stt:
-            notify("Listen", "Set API keys in Preferences")
+            notify("Listen", "No STT configured")
             return
         self.on_press()
         time.sleep(3)
         self.on_release()
 
     def test_record(self, sender):
-        """Simulate a press/release to test the pipeline without hotkey."""
         if not self.stt:
-            notify("Listen", "No STT configured — check Preferences")
+            notify("Listen", "No STT configured")
             return
         threading.Thread(target=self._test_thread, daemon=True).start()
 
@@ -300,336 +356,127 @@ class ListenApp(rumps.App):
             time.sleep(3)
             self.on_release()
             time.sleep(8)
-            if self.title == "Listen":
-                notify("Listen", "Test complete — pipeline works!")
-            else:
-                notify("Listen", "Test timed out — check logs")
+            notify("Listen", "Test complete — check output")
         except Exception as e:
             notify("Listen", f"Test failed: {e}")
 
-    def cycle_mode(self, sender):
-        modes = list(APP_MODES.keys())
-        idx = modes.index(self.current_mode) if self.current_mode in modes else 0
-        self.current_mode = modes[(idx + 1) % len(modes)]
-        self.sync_titles()
-        notify("Listen", f"Mode: {self.current_mode}")
+    def set_mode(self, sender):
+        mode = getattr(sender, "_mode", "default")
+        self.current_mode = mode
+        callAfter(_sync_menu_items, self)
+        notify("Listen", f"Mode: {mode}")
 
-    def choose_stt(self, sender):
-        choices = ", ".join(registry.list_stt())
-        choice = self._ask_text(f"Available: {choices}", "STT Provider", self.settings.get("stt_provider", "elevenlabs"))
-        if choice and choice.strip() in registry.list_stt():
-            self.settings["stt_provider"] = choice.strip()
-            save(self.settings)
-            self.init_providers()
-            self.sync_titles()
+    def set_stt(self, sender):
+        provider = getattr(sender, "_provider", "elevenlabs")
+        self.settings["stt_provider"] = provider
+        save(self.settings)
+        self.init_providers()
+        callAfter(_sync_menu_items, self)
+        notify("Listen", f"STT: {provider}")
 
-    def choose_interp(self, sender):
-        choices = ", ".join(registry.list_interpreters())
-        choice = self._ask_text(f"Available: {choices}", "Interpreter", self.settings.get("interpreter_provider", "openrouter"))
-        if choice and choice.strip() in registry.list_interpreters():
-            self.settings["interpreter_provider"] = choice.strip()
-            save(self.settings)
-            self.init_providers()
-            self.sync_titles()
+    def set_interp(self, sender):
+        provider = getattr(sender, "_provider", "openrouter")
+        self.settings["interpreter_provider"] = provider
+        save(self.settings)
+        self.init_providers()
+        callAfter(_sync_menu_items, self)
+        notify("Listen", f"Interpreter: {provider}")
+
+    def set_hotkey(self, sender):
+        key = getattr(sender, "_hotkey", "ctrl_r")
+        self.settings["hotkey"] = key
+        save(self.settings)
+        self.start_hotkey()
+        callAfter(_sync_menu_items, self)
+        notify("Listen", f"Hotkey: {key}")
 
     def toggle_cleanup(self, sender):
         self.settings["cleanup_enabled"] = not self.settings.get("cleanup_enabled", True)
         save(self.settings)
         self.init_providers()
+        callAfter(_sync_menu_items, self)
         notify("Listen", f"Cleanup {'on' if self.settings['cleanup_enabled'] else 'off'}")
+
+    def toggle_paste(self, sender):
+        self.settings["use_paste"] = not self.settings.get("use_paste", True)
+        save(self.settings)
+        callAfter(_sync_menu_items, self)
+        notify("Listen", f"Paste mode: {'paste' if self.settings['use_paste'] else 'type'}")
+
+    def open_config(self, sender):
+        config_dir = Path.home() / ".listen"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["open", str(config_dir)])
+
+    def show_prefs(self, sender):
+        """Native rumps.Window — safe inside py2app, no custom NSWindow."""
+        body = json.dumps(self.settings, indent=2)
+        win = rumps.Window(
+            title="Listen — Preferences",
+            message=(
+                "Edit and click OK to save. Changes apply immediately.\n"
+                "Keys: stt_provider, interpreter_provider, hotkey, "
+                "cleanup_enabled, use_paste, sound_enabled, and API keys."
+            ),
+            default_text=body,
+            ok="Save",
+            cancel="Cancel",
+            dimensions=(560, 360),
+        )
+        resp = win.run()
+        if not resp.clicked:
+            return
+        try:
+            new_cfg = json.loads(resp.text)
+            if not isinstance(new_cfg, dict):
+                raise ValueError("config must be a JSON object")
+        except Exception as e:
+            rumps.alert("Listen — Invalid config", f"{e}\n\nSettings NOT saved.")
+            return
+        self.settings = {**self.settings, **new_cfg}
+        save(self.settings)
+        self.init_providers()
+        self.start_hotkey()
+        sounds.set_enabled(self.settings.get("sound_enabled", False))
+        callAfter(_sync_menu_items, self)
+        notify("Listen", "Settings saved")
+
+    def prompt_accessibility(self, sender):
+        try:
+            from ApplicationServices import (
+                AXIsProcessTrustedWithOptions,
+                kAXTrustedCheckOptionPrompt,
+            )
+            AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: True})
+        except Exception as e:
+            log(f"accessibility prompt failed: {e}")
+        subprocess.run(["open", ACCESSIBILITY_PANE])
+
+    def reload_config(self, sender):
+        self.settings = load()
+        self.init_providers()
+        self.start_hotkey()
+        callAfter(_sync_menu_items, self)
+        notify("Listen", "Config reloaded")
 
     def quit_app(self, sender):
         if self.hotkey:
             self.hotkey.stop()
         rumps.quit_application()
 
-    def _ask_text(self, message: str, title: str, default_text: str = "") -> Optional[str]:
-        alert = NSAlert.alloc().init()
-        alert.setMessageText_(title)
-        alert.setInformativeText_(message)
-        alert.addButtonWithTitle_("Save")
-        alert.addButtonWithTitle_("Cancel")
-        field = NSTextField.alloc().initWithFrame_(((0, 0), (360, 22)))
-        field.setStringValue_(default_text)
-        alert.setAccessoryView_(field)
-        if alert.runModal() == NSAlertFirstButtonReturn:
-            return field.stringValue()
-        return None
-
-    # ── Preferences ────────────────────────────────────────
-
-    def show_prefs(self, sender):
-        # Kill any old window
-        if self._pref_win:
-            try:
-                self._pref_win.close()
-            except Exception:
-                pass
-            self._pref_win = None
-
-        win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(0, 0, 400, 440), 15, 2, False,
-        )
-        win.setTitle_("Preferences")
-        win.center()
-
-        v = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 400, 440))
-        v.setWantsLayer_(True)
-        v.layer().setBackgroundColor_(NSColor.whiteColor().CGColor())
-        win.setContentView_(v)
-
-        fields = {}
-        y = 400
-
-        def lbl(text, x, yv, w=130, dark=True):
-            l = NSTextField.alloc().initWithFrame_(NSMakeRect(x, yv, w, 16))
-            l.setStringValue_(text)
-            l.setEditable_(False)
-            l.setBordered_(False)
-            l.setBackgroundColor_(NSColor.clearColor())
-            l.setTextColor_(NSColor.blackColor() if dark else NSColor.darkGrayColor())
-            l.setFont_(NSFont.systemFontOfSize_(12) if dark else NSFont.systemFontOfSize_(11))
-            v.addSubview_(l)
-
-        def secure(val, x, yv, w=250):
-            f = NSSecureTextField.alloc().initWithFrame_(NSMakeRect(x, yv, w, 22))
-            f.setStringValue_(val)
-            f.setFont_(NSFont.systemFontOfSize_(11))
-            v.addSubview_(f)
-            return f
-
-        def plain(val, x, yv, w=250):
-            f = NSTextField.alloc().initWithFrame_(NSMakeRect(x, yv, w, 22))
-            f.setStringValue_(val)
-            f.setFont_(NSFont.systemFontOfSize_(11))
-            v.addSubview_(f)
-            return f
-
-        lbl("API Keys", 20, y)
-        y -= 26
-        lbl("OpenRouter", 20, y, dark=False)
-        fields["or"] = secure(self.settings.get("openrouter_api_key", ""), 120, y - 2)
-        y -= 28
-        lbl("ElevenLabs", 20, y, dark=False)
-        fields["el"] = secure(self.settings.get("elevenlabs_api_key", ""), 120, y - 2)
-        y -= 28
-        lbl("OpenAI", 20, y, dark=False)
-        fields["oa"] = secure(self.settings.get("openai_api_key", ""), 120, y - 2)
-        y -= 28
-        lbl("Groq", 20, y, dark=False)
-        fields["gq"] = secure(self.settings.get("groq_api_key", ""), 120, y - 2)
-        y -= 36
-
-        lbl("Providers", 20, y)
-        y -= 26
-        lbl("STT", 20, y, dark=False)
-        fields["stt"] = plain(self.settings.get("stt_provider", "elevenlabs"), 120, y - 2, w=120)
-        y -= 28
-        lbl("Interpreter", 20, y, dark=False)
-        fields["interp"] = plain(self.settings.get("interpreter_provider", "openrouter"), 120, y - 2, w=120)
-        y -= 28
-        lbl("Model", 20, y, dark=False)
-        fields["model"] = plain(self.settings.get("openrouter_model", "google/gemini-flash-1.5"), 120, y - 2, w=250)
-        y -= 36
-
-        lbl("Hotkey", 20, y)
-        y -= 26
-        lbl("Key name", 20, y, dark=False)
-        fields["hk"] = plain(self.settings.get("hotkey", "ctrl_r"), 120, y - 2, w=120)
-
-        rec_btn = NSButton.alloc().initWithFrame_(NSMakeRect(260, y - 2, 120, 24))
-        rec_btn.setTitle_("Record Key")
-        rec_btn.setBezelStyle_(1)
-        rec_btn.setTarget_(self)
-        rec_btn.setAction_("doRecordKey:")
-        v.addSubview_(rec_btn)
-        y -= 36
-
-        lbl("Options", 20, y)
-        y -= 26
-        b1 = NSButton.alloc().initWithFrame_(NSMakeRect(20, y - 2, 100, 20))
-        b1.setButtonType_(NSSwitchButton)
-        b1.setTitle_("Cleanup")
-        b1.setState_(1 if self.settings.get("cleanup_enabled", True) else 0)
-        b1.setFont_(NSFont.systemFontOfSize_(11))
-        v.addSubview_(b1)
-        fields["clean"] = b1
-
-        b2 = NSButton.alloc().initWithFrame_(NSMakeRect(140, y - 2, 100, 20))
-        b2.setButtonType_(NSSwitchButton)
-        b2.setTitle_("Paste")
-        b2.setState_(1 if self.settings.get("use_paste", True) else 0)
-        b2.setFont_(NSFont.systemFontOfSize_(11))
-        v.addSubview_(b2)
-        fields["paste"] = b2
-        y -= 40
-
-        save_btn = NSButton.alloc().initWithFrame_(NSMakeRect(150, y, 100, 28))
-        save_btn.setTitle_("Save")
-        save_btn.setBezelStyle_(1)
-        save_btn.setTarget_(self)
-        save_btn.setAction_("savePrefs:")
-        v.addSubview_(save_btn)
-
-        self._pref_win = win
-        self._pref_fields = fields
-        win.makeKeyAndOrderFront_(None)
-
-    # ── Record Key (thread-safe) ───────────────────────────
-
-    def doRecordKey_(self, sender):
-        """Open a capture window. Key press is captured by pynput and dispatched to main thread."""
-        # Close old capture window if any
-        if self._record_key_window:
-            try:
-                self._record_key_window.orderOut_(None)
-            except Exception:
-                pass
-            self._record_key_window = None
-        if self._record_key_listener:
-            try:
-                self._record_key_listener.stop()
-            except Exception:
-                pass
-            self._record_key_listener = None
-
-        # Create simple capture window
-        win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(0, 0, 300, 120), 1, 2, False,
-        )
-        win.setTitle_("Record Key")
-        win.center()
-
-        v = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 300, 120))
-        v.setWantsLayer_(True)
-        v.layer().setBackgroundColor_(NSColor.whiteColor().CGColor())
-        win.setContentView_(v)
-
-        lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(20, 60, 260, 20))
-        lbl.setStringValue_("Press any key...")
-        lbl.setEditable_(False)
-        lbl.setBordered_(False)
-        lbl.setBackgroundColor_(NSColor.clearColor())
-        lbl.setTextColor_(NSColor.blackColor())
-        lbl.setFont_(NSFont.systemFontOfSize_(14))
-        lbl.setAlignment_(1)  # center
-        v.addSubview_(lbl)
-
-        cancel = NSButton.alloc().initWithFrame_(NSMakeRect(100, 20, 100, 24))
-        cancel.setTitle_("Cancel")
-        cancel.setBezelStyle_(1)
-        cancel.setTarget_(self)
-        cancel.setAction_("cancelRecordKey:")
-        v.addSubview_(cancel)
-
-        self._record_key_window = win
-        self._record_key_label = lbl
-        win.makeKeyAndOrderFront_(None)
-
-        # Start pynput listener
-        from pynput import keyboard
-
-        def on_press(key):
-            try:
-                name = key.name if hasattr(key, 'name') and key.name else str(key.char)
-            except Exception:
-                name = str(key)
-            # Dispatch to main thread - NEVER touch UI from pynput thread
-            callAfter(self.finishRecordKey_, name)
-
-        self._record_key_listener = keyboard.Listener(on_press=on_press)
-        self._record_key_listener.start()
-
-    def cancelRecordKey_(self, sender):
-        if self._record_key_listener:
-            try:
-                self._record_key_listener.stop()
-            except Exception:
-                pass
-            self._record_key_listener = None
-        if self._record_key_window:
-            try:
-                self._record_key_window.orderOut_(None)
-            except Exception:
-                pass
-            self._record_key_window = None
-
-    def finishRecordKey_(self, key_name):
-        """Called on main thread after key is pressed."""
-        # Stop listener
-        if self._record_key_listener:
-            try:
-                self._record_key_listener.stop()
-            except Exception:
-                pass
-            self._record_key_listener = None
-
-        # Close capture window
-        if self._record_key_window:
-            try:
-                self._record_key_window.orderOut_(None)
-            except Exception:
-                pass
-            self._record_key_window = None
-
-        # Update preferences field
-        if key_name and self._pref_fields and "hk" in self._pref_fields:
-            self._pref_fields["hk"].setStringValue_(key_name)
-
-        # Save immediately
-        self.settings["hotkey"] = key_name
-        save(self.settings)
-        self.start_hotkey()
-        notify("Listen", f"Hotkey set to: {key_name}")
-
-    # ── Save Preferences ───────────────────────────────────
-
-    def savePrefs_(self, sender):
-        f = self._pref_fields
-        self.settings["openrouter_api_key"] = f["or"].stringValue().strip()
-        self.settings["elevenlabs_api_key"] = f["el"].stringValue().strip()
-        self.settings["openai_api_key"] = f["oa"].stringValue().strip()
-        self.settings["groq_api_key"] = f["gq"].stringValue().strip()
-        self.settings["stt_provider"] = f["stt"].stringValue().strip()
-        self.settings["interpreter_provider"] = f["interp"].stringValue().strip()
-        self.settings["hotkey"] = f["hk"].stringValue().strip()
-        self.settings["openrouter_model"] = f["model"].stringValue().strip()
-        self.settings["cleanup_enabled"] = f["clean"].state() == 1
-        self.settings["use_paste"] = f["paste"].state() == 1
-        save(self.settings)
-        self.init_providers()
-        self.sync_titles()
-        self.start_hotkey()
-        if self._pref_win:
-            try:
-                self._pref_win.close()
-            except Exception:
-                pass
-            self._pref_win = None
-        notify("Listen", "Preferences saved")
-
 
 def main():
-    # Check Accessibility permission but DON'T quit — app stays visible in menubar
     try:
-        if not AXIsProcessTrustedWithOptions(None):
-            # Show a one-time alert
-            alert = NSAlert.alloc().init()
-            alert.setMessageText_("Accessibility Permission Required")
-            alert.setInformativeText_(
-                "Listen needs Accessibility permission for global hotkeys.\n\n"
-                "1. Click Open Settings\n"
-                "2. Check the box next to Listen\n"
-                "3. Relaunch Listen"
-            )
-            alert.addButtonWithTitle_("Open Settings")
-            alert.addButtonWithTitle_("Continue Anyway")
-            if alert.runModal() == NSAlertFirstButtonReturn:
-                subprocess.run([
-                    "open",
-                    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-                ])
-            # App keeps running — hotkey just won't work until permission is granted
+        from ApplicationServices import (
+            AXIsProcessTrusted,
+            AXIsProcessTrustedWithOptions,
+            kAXTrustedCheckOptionPrompt,
+        )
+        if not AXIsProcessTrusted():
+            # Show the system prompt (non-blocking) and open the pane directly
+            AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: True})
+            subprocess.run(["open", ACCESSIBILITY_PANE])
+            notify("Listen", "Grant Accessibility, then quit & relaunch")
     except Exception:
         pass
     ListenApp().run()

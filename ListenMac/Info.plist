@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Listen</string>
+    <key>CFBundleDisplayName</key>
+    <string>Listen</string>
+    <key>CFBundleExecutable</key>
+    <string>Listen</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.listen.app</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleIconFile</key>
+    <string>Listen.icns</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Listen records your voice so it can be transcribed.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Listen pastes the transcribed text into the active app.</string>
+    <key>NSAccessibilityUsageDescription</key>
+    <string>Listen needs Accessibility to detect your push-to-talk hotkey and paste the transcript.</string>
+</dict>
+</plist>
