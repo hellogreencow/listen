@@ -15,7 +15,7 @@ DEFAULTS = {
     "groq_api_key": "",
     "stt_provider": "elevenlabs",
     "interpreter_provider": "openrouter",
-    "hotkey": "alt_r",
+    "hotkey": "ctrl_r",
     "cleanup_enabled": True,
     "use_paste": True,
     "sound_enabled": False,

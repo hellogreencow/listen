@@ -111,9 +111,13 @@ class ListenApp(rumps.App):
         sounds.set_enabled(self.settings.get("sound_enabled", False))
         self.start_hotkey()
         self.build_menu()
+        # Startup notification
+        hotkey_display = self.settings.get("hotkey", "ctrl_r").replace("_", " ").title()
+        notify("Listen", f"Hold {hotkey_display} to record")
 
     def build_menu(self):
         self._mi_record = rumps.MenuItem("Record", callback=self.do_record)
+        self._mi_test = rumps.MenuItem("Test Recording", callback=self.test_record)
         self._mi_mode = rumps.MenuItem("Mode: auto", callback=self.cycle_mode)
         self._mi_stt = rumps.MenuItem("STT: elevenlabs", callback=self.choose_stt)
         self._mi_interp = rumps.MenuItem("Interpreter: openrouter", callback=self.choose_interp)
@@ -122,6 +126,7 @@ class ListenApp(rumps.App):
         self._mi_quit = rumps.MenuItem("Quit", callback=self.quit_app)
         self.menu = [
             self._mi_record,
+            self._mi_test,
             None,
             self._mi_mode,
             self._mi_stt,
@@ -172,8 +177,9 @@ class ListenApp(rumps.App):
     def start_hotkey(self):
         if self.hotkey:
             self.hotkey.stop()
+        key = self.settings.get("hotkey", "ctrl_r")
         self.hotkey = HotkeyListener(
-            key_name=self.settings.get("hotkey", "alt_r"),
+            key_name=key,
             on_press=self.on_press,
             on_release=self.on_release,
         )
@@ -278,6 +284,26 @@ class ListenApp(rumps.App):
         self.on_press()
         time.sleep(3)
         self.on_release()
+
+    def test_record(self, sender):
+        """Simulate a press/release to test the pipeline without hotkey."""
+        if not self.stt:
+            notify("Listen", "No STT configured — check Preferences")
+            return
+        threading.Thread(target=self._test_thread, daemon=True).start()
+
+    def _test_thread(self):
+        try:
+            self.on_press()
+            time.sleep(3)
+            self.on_release()
+            time.sleep(8)
+            if self.title == "Listen":
+                notify("Listen", "Test complete — pipeline works!")
+            else:
+                notify("Listen", "Test timed out — check logs")
+        except Exception as e:
+            notify("Listen", f"Test failed: {e}")
 
     def cycle_mode(self, sender):
         modes = list(APP_MODES.keys())
@@ -407,7 +433,7 @@ class ListenApp(rumps.App):
         lbl("Hotkey", 20, y)
         y -= 26
         lbl("Key name", 20, y, dark=False)
-        fields["hk"] = plain(self.settings.get("hotkey", "alt_r"), 120, y - 2, w=120)
+        fields["hk"] = plain(self.settings.get("hotkey", "ctrl_r"), 120, y - 2, w=120)
 
         rec_btn = NSButton.alloc().initWithFrame_(NSMakeRect(260, y - 2, 120, 24))
         rec_btn.setTitle_("Record Key")
