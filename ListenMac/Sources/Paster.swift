@@ -13,23 +13,26 @@ enum Paster {
         pb.setString(text, forType: .string)
 
         // Give the pasteboard write a tick to commit before synthesizing.
+        // Use NSAppleScript to drive System Events. CGEvent.post is silently
+        // dropped on modern macOS for menubar-style background apps even with
+        // Accessibility granted; AppleEvents → System Events is the
+        // documented "bulletproof" path (see AGENTS.md). First run prompts
+        // for Automation permission against System Events; granted thereafter.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            // Use combinedSessionState + cgAnnotatedSessionEventTap. This
-            // combination is what works for background/menubar apps that need
-            // to deliver synth Cmd+V to a different frontmost app. The
-            // .hidSystemState + .cghidEventTap combo is the textbook docs
-            // pairing but is often silently rejected for non-foreground
-            // posters on modern macOS.
-            let src = CGEventSource(stateID: .combinedSessionState)
-            src?.localEventsSuppressionInterval = 0
-            let v = CGKeyCode(kVK_ANSI_V)
-            let down = CGEvent(keyboardEventSource: src, virtualKey: v, keyDown: true)
-            let up   = CGEvent(keyboardEventSource: src, virtualKey: v, keyDown: false)
-            down?.flags = .maskCommand
-            up?.flags = .maskCommand
-            down?.post(tap: .cgAnnotatedSessionEventTap)
-            usleep(8_000) // 8 ms — some apps drop the up if it arrives same tick
-            up?.post(tap: .cgAnnotatedSessionEventTap)
+            let src = "tell application \"System Events\" to keystroke \"v\" using command down"
+            var err: NSDictionary?
+            let result = NSAppleScript(source: src)?.executeAndReturnError(&err)
+            // Direct file log — bypasses os_log privacy redaction so we can
+            // actually read the AppleScript outcome.
+            let line = "\(Date()) result=\(String(describing: result)) err=\(String(describing: err))\n"
+            if let data = line.data(using: .utf8) {
+                let url = URL(fileURLWithPath: "/tmp/listen-paste.log")
+                if let h = try? FileHandle(forWritingTo: url) {
+                    h.seekToEndOfFile(); h.write(data); try? h.close()
+                } else {
+                    try? data.write(to: url)
+                }
+            }
         }
     }
 }

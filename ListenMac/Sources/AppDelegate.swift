@@ -70,8 +70,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let button = statusItem.button else { return }
         switch state {
         case .idle:      button.title = "Listen"
-        case .listening: button.title = "listening..."
-        case .thinking:  button.title = "thinking..."
+        case .listening: button.title = "listening"
+        case .thinking:  button.title = "thinking"
         }
     }
 
@@ -188,10 +188,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         _ = stt
+        state = .listening
         do {
             try recorder.start()
-            state = .listening
         } catch {
+            state = .idle
             notify("Mic error: \(error.localizedDescription)")
         }
     }
