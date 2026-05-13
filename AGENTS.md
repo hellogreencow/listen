@@ -30,6 +30,21 @@ learned by breaking the user's working app multiple times in one session.
 5. **When the user says "it was working until you broke it", believe them.**
    Retrace your edits and your rebuilds before "diagnosing" anything new.
 
+6. **NEVER run `tccutil reset` as a diagnostic step.** It looks like a
+   harmless query but it actually wipes the grant. I (a prior agent) did
+   this and broke the user's working paste flow. If you want to *inspect*
+   TCC state, query the sqlite DB directly with sudo — read-only. Never
+   reset on a hunch.
+
+7. **Wispr Flow / Superwhisper "just work" because they're notarized with
+   an Apple Developer ID.** Listen is self-signed with a local cert, which
+   the build pins to via the designated requirement. That trick works for
+   Microphone and AppleEvents grants across rebuilds, but Accessibility
+   has stricter validation on macOS Sonoma+ and can be flakier. If the
+   user complains "why doesn't Listen behave like Wispr", the honest
+   answer is "notarization, $99/yr Apple Developer Program". Do not
+   pretend there's a free workaround.
+
 ## Code signing (the cdhash problem)
 
 - `py2app` and `swiftc` produce ad-hoc-signed bundles by default. Every
@@ -108,28 +123,46 @@ Known triggers:
   delivers, great; if not, the user can manually Cmd+V to get the text.
   See `Paster.swift`.
 
-Posting mechanism that's currently in use:
+Posting mechanism currently in use (as of commit 8f5e94c):
 
 ```swift
-let src = CGEventSource(stateID: .hidSystemState)
-let down = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: true)
-let up   = CGEvent(keyboardEventSource: src, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: false)
-down?.flags = .maskCommand
-up?.flags = .maskCommand
-down?.post(tap: .cghidEventTap)
-up?.post(tap: .cghidEventTap)
+let src = "tell application \"System Events\" to keystroke \"v\" using command down"
+var err: NSDictionary?
+NSAppleScript(source: src)?.executeAndReturnError(&err)
 ```
 
-Things that may help when synth Cmd+V isn't delivering (not yet
-confirmed in this codebase):
+AppleScript driving System Events is the path that actually delivers on
+modern macOS. We tried `CGEvent.post` with every combination of source
+(`.hidSystemState`, `.combinedSessionState`) and tap (`.cghidEventTap`,
+`.cgAnnotatedSessionEventTap`) — all of them got silently dropped for
+this self-signed menubar app even with Accessibility granted. AppleScript
+goes through TCC's Automation gate (`kTCCServiceAppleEvents` →
+`com.apple.systemevents`) plus the Accessibility gate, but actually
+delivers the keystroke.
 
-- Try `CGEventSource(stateID: .combinedSessionState)` or `nil` source.
-- Try posting to `.cgSessionEventTap` instead of `.cghidEventTap`.
-- Insert a short `usleep` between keyDown and keyUp.
-- Last-resort: AppleScript via `NSAppleScript` — needs a one-time
-  "Listen wants to control System Events" prompt under Automation, then
-  bulletproof. NSAppleEventsUsageDescription is already declared in
-  `Info.plist` for this.
+Required permissions for this paste path:
+
+1. **Accessibility** for `com.listen.app` — without it, System Events
+   returns error 1002 "Listen is not allowed to send keystrokes."
+2. **Automation** for `com.listen.app` → `com.apple.systemevents` —
+   prompted automatically on first paste ("Listen wants to control
+   System Events"). `NSAppleEventsUsageDescription` is declared in
+   `Info.plist` for this prompt.
+
+Diagnostic log: every paste appends its result (and the AppleScript
+error dict on failure) to `/tmp/listen-paste.log`. Bypasses os_log's
+private-string redaction so the actual NSAppleScript error number/
+message is readable. Left in production on purpose — when a user reports
+paste failure, that file tells you exactly what TCC service rejected it.
+
+Common error codes you'll see in `/tmp/listen-paste.log`:
+
+- `1002` — Listen lacks Accessibility. Fix: "Grant Accessibility…" menu
+  item, or have the user toggle it in System Settings.
+- `-1743` — Listen lacks Automation for System Events. Fix: re-run a
+  paste; the first run prompts. If user denied, reset with
+  `tccutil reset AppleEvents com.listen.app` and try again.
+- `nil` err with `result` set — paste succeeded.
 
 ## Auto-start at login
 
