@@ -192,8 +192,12 @@ Common error codes you'll see in `/tmp/listen-paste.log`:
 ## Provider stale-model gotchas
 
 - OpenRouter model IDs change. `google/gemini-flash-1.5` was the default in
-  the old Python config and now 404s. Default to `openai/gpt-4o-mini` or
-  re-check the current Gemini Flash ID before suggesting one.
+  the old Python config and now 404s. Current default is
+  `google/gemini-2.5-flash-lite` — benchmarked 2026-07 with the real cleanup
+  prompt at 0.8 s median / 1.6 s max vs the free nemotron's 1.1 s median /
+  7.8 s max. NEVER default to a `:free` model: free-tier queueing has a
+  multi-second tail that reads as "the app is slow", and the user's key has
+  paid credit (a dictation costs ~$0.00006).
 
 - ElevenLabs Scribe (`scribe_v1`) is the default STT and works well, but
   is ~3× slower than Groq Whisper-large-v3 for short clips. For latency-

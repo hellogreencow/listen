@@ -333,7 +333,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let prompt = settings.cleanup_prompt
                     let input = text
                     let t1 = Date()
-                    let cleaned = try await withTimeout(10) { try await interpreter.interpret(input, prompt: prompt) }
+                    // 5 s is ~3× the benchmarked worst case for the default
+                    // cleanup model (gemini-2.5-flash-lite: 0.8 s median,
+                    // 1.6 s max); past that, raw text beats waiting.
+                    let cleaned = try await withTimeout(5) { try await interpreter.interpret(input, prompt: prompt) }
                     NSLog("[Listen] process: interpreter returned \(cleaned.count) chars in \(ms(t1))ms")
                     // Guard against over-pruning: if cleanup collapsed a real
                     // transcription to empty, keep the raw STT text rather

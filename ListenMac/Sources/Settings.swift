@@ -19,7 +19,7 @@ struct AppSettings: Codable {
     var elevenlabs_model: String = "scribe_v1"
     var openai_whisper_model: String = "whisper-1"
     var openai_cleanup_model: String = "gpt-4o-mini"
-    var openrouter_model: String = "openai/gpt-4o-mini"
+    var openrouter_model: String = "google/gemini-2.5-flash-lite"
     var groq_stt_model: String = "whisper-large-v3"
     var groq_model: String = "llama-3.1-8b-instant"
 
