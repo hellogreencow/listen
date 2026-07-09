@@ -1,16 +1,23 @@
+import Combine
 import SwiftUI
 
 @MainActor
 final class SettingsModel: ObservableObject {
     @Published var settings: AppSettings
-    let onSave: (AppSettings) -> Void
+    private let onSave: (AppSettings) -> Void
+    private var applyCancellable: AnyCancellable?
 
     init(_ initial: AppSettings, onSave: @escaping (AppSettings) -> Void) {
         self.settings = initial
         self.onSave = onSave
+        // Apply-as-you-edit. The explicit Save button meant closing the
+        // window silently discarded changes. Debounced so per-keystroke
+        // edits don't thrash provider/hotkey reloads.
+        applyCancellable = $settings
+            .dropFirst()
+            .debounce(for: .milliseconds(400), scheduler: DispatchQueue.main)
+            .sink { [weak self] s in self?.onSave(s) }
     }
-
-    func save() { onSave(settings) }
 }
 
 struct SettingsView: View {
@@ -63,8 +70,7 @@ struct SettingsView: View {
                 Text("Press and hold this key to record. Release to transcribe.")
                     .foregroundStyle(.secondary).font(.callout)
             }
-            section("Insertion") {
-                Toggle("Paste result (Cmd+V) instead of typing", isOn: $model.settings.use_paste)
+            section("Feedback") {
                 Toggle("Play sound when recording starts", isOn: $model.settings.sound_enabled)
             }
             footer
@@ -76,6 +82,7 @@ struct SettingsView: View {
             header("Transcription", "Speech-to-text provider")
             section("Provider") {
                 Picker("STT", selection: $model.settings.stt_provider) {
+                    Text("Apple (on-device)").tag("apple")
                     Text("ElevenLabs Scribe").tag("elevenlabs")
                     Text("OpenAI Whisper").tag("openai")
                     Text("Groq Whisper").tag("groq")
@@ -85,6 +92,12 @@ struct SettingsView: View {
             }
             Group {
                 switch model.settings.stt_provider {
+                case "apple":
+                    section("Model") {
+                        Text("On-device SpeechTranscriber — no API key, no network, no rate limits.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
                 case "openai":
                     section("OpenAI model") {
                         TextField("model", text: $model.settings.openai_whisper_model)
@@ -177,9 +190,9 @@ struct SettingsView: View {
             HStack {
                 Text("Permissions")
                 Spacer()
-                Button("Open Input Monitoring") {
+                Button("Open Accessibility") {
                     NSWorkspace.shared.open(URL(string:
-                        "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")!)
+                        "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
                 }.buttonStyle(.bordered)
             }
         }
@@ -212,11 +225,9 @@ struct SettingsView: View {
     }
 
     private var footer: some View {
-        HStack {
-            Spacer()
-            Button("Save") { model.save() }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
-        }.padding(.top, 8)
+        Text("Changes are saved as you edit.")
+            .font(.caption)
+            .foregroundStyle(.tertiary)
+            .padding(.top, 8)
     }
 }

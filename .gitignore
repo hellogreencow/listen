@@ -13,3 +13,6 @@ __pycache__/
 
 # App data
 .listen/
+
+# Local compiled tool binaries
+tools/speech-bench/speech-bench

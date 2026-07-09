@@ -34,7 +34,6 @@ final class Hotkey {
     private static let keyCodeMap: [String: Int] = [
         "f13": kVK_F13, "f14": kVK_F14, "f15": kVK_F15,
         "f16": kVK_F16, "f17": kVK_F17, "f18": kVK_F18, "f19": kVK_F19,
-        "escape": kVK_Escape,
     ]
 
     static let supportedKeys: [(label: String, key: String)] = [
@@ -63,8 +62,8 @@ final class Hotkey {
         } else if let keyCode = Hotkey.keyCodeMap[keyName] {
             installFunctionKeyMonitor(keyCode: keyCode)
         } else {
-            NSLog("[Listen] unknown hotkey '\(keyName)' — defaulting to ctrl_r")
-            installModifierMonitor(flag: .control, keyCode: kVK_RightControl)
+            NSLog("[Listen] unknown hotkey '\(keyName)' — defaulting to alt_r")
+            installModifierMonitor(flag: .option, keyCode: kVK_RightOption)
         }
         NSLog("[Listen] hotkey active: \(keyName)")
     }

@@ -226,3 +226,31 @@ Common error codes you'll see in `/tmp/listen-paste.log`:
 
 - The "ship" command from the user means commit + push. It does not mean
   "polish first, then commit". Polish AFTER ship.
+
+## Reliability invariants (added after the 2026-07 bug sweep)
+
+- **Menubar messages go through `transientMessage` + `renderStatus()`, never
+  raw `button.title` swaps.** The old notify() restored a stale "thinking"
+  title that stuck forever and made failures look like a hung app.
+
+- **Every dictation carries a session id.** A superseded/cancelled pipeline
+  must not paste or touch menubar state (`id == session` guards). Pressing
+  the hotkey while "thinking" cancels the old pipeline and records fresh.
+
+- **All provider calls run under `withTimeout`** (30 s STT, 10 s cleanup).
+  Cleanup failure/timeout falls back to the raw transcript — losing polish
+  is fine, losing the dictation is not.
+
+- **`AppSettings` decodes field-by-field with per-key fallbacks.** Synthesized
+  Codable fails the whole decode on one missing key, which silently reset the
+  entire config (keys, hotkey, provider) whenever a new field shipped. Keep
+  the custom `init(from:)` in sync when adding fields.
+
+- **`Recorder.stop()` is async and waits for `audioRecorderDidFinishRecording`**
+  (1 s safety net). Reading the m4a before finalization occasionally uploaded
+  a truncated file → empty transcriptions.
+
+- **Recordings hard-cap at 180 s** — a missed key-release (screen lock,
+  secure-input field eating the flagsChanged event) otherwise records forever.
+  Note: secure input fields block NSEvent global monitors entirely, so the
+  hotkey is genuinely dead while a password field is focused. Not a bug.

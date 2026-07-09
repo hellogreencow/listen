@@ -30,5 +30,7 @@
     <string>Listen pastes the transcribed text into the active app.</string>
     <key>NSAccessibilityUsageDescription</key>
     <string>Listen needs Accessibility to detect your push-to-talk hotkey and paste the transcript.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Listen transcribes your voice on-device using Apple's speech recognition.</string>
 </dict>
 </plist>

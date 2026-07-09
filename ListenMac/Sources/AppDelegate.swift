@@ -11,7 +11,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var stt: STTProvider?
     private var interpreter: Interpreter?
     private var settingsWindow: NSWindow?
-    private var state: State = .idle { didSet { renderStatus() } }
+    private var state: State = .idle {
+        didSet {
+            // Activity always outranks a lingering notification message.
+            if state != .idle { transientMessage = nil }
+            renderStatus()
+        }
+    }
+    /// Short-lived menubar message (errors, hints). Rendered instead of the
+    /// state title until it expires; see notify().
+    private var transientMessage: String?
+    /// In-flight transcription pipeline; cancelled when a new press supersedes it.
+    private var processTask: Task<Void, Never>?
+    /// Monotonic dictation counter so a superseded/cancelled pipeline can
+    /// never paste stale text or stomp the menubar state of a newer one.
+    private var session = 0
+    private var autoStopWork: DispatchWorkItem?
+
+    /// Hard cap so a missed key-release (screen lock, secure input) can't
+    /// record forever and then upload minutes of audio.
+    private static let maxRecordingSeconds: Double = 180
 
     enum State { case idle, listening, thinking }
 
@@ -32,9 +51,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             forName: NSWorkspace.didWakeNotification,
             object: nil,
             queue: .main
-        ) { [weak self] _ in
-            guard let self else { return }
-            self.hotkey.start(keyName: self.settings.hotkey)
+        ) { _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.hotkey.start(keyName: self.settings.hotkey)
+            }
         }
     }
 
@@ -68,6 +89,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func renderStatus() {
         guard let button = statusItem.button else { return }
+        if let msg = transientMessage {
+            button.title = msg
+            return
+        }
         switch state {
         case .idle:      button.title = "Listen"
         case .listening: button.title = "listening"
@@ -90,6 +115,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let grant = NSMenuItem(title: "Grant Accessibility…", action: #selector(grantAccessibility), keyEquivalent: "")
         grant.target = self
         menu.addItem(grant)
+        let chime = NSMenuItem(title: "Chime on Record", action: #selector(toggleChime), keyEquivalent: "")
+        chime.target = self
+        chime.state = settings.sound_enabled ? .on : .off
+        menu.addItem(chime)
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit Listen", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quit)
@@ -135,6 +164,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSLog("[Listen] startup: AXIsProcessTrusted = \(trusted)")
     }
 
+    @objc private func toggleChime() {
+        settings.sound_enabled.toggle()
+        SettingsStore.save(settings)
+        statusItem.menu = buildMenu()
+    }
+
+    /// Subtle system sound on record start/stop, gated by settings.sound_enabled.
+    private func playChime(_ name: String) {
+        guard settings.sound_enabled else { return }
+        NSSound(named: NSSound.Name(name))?.play()
+    }
+
     @objc private func grantAccessibility() {
         let prompt = "AXTrustedCheckOptionPrompt" as CFString
         _ = AXIsProcessTrustedWithOptions([prompt: true] as CFDictionary)
@@ -156,6 +197,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             SettingsStore.save(new)
             self.reloadProviders()
             self.hotkey.start(keyName: new.hotkey)
+            self.statusItem.menu = self.buildMenu() // keep chime checkmark in sync
         }
         let host = NSHostingController(rootView: SettingsView(model: model))
         let win = NSWindow(contentViewController: host)
@@ -182,59 +224,98 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Recording flow
 
     private func onPress() {
-        guard state == .idle else { return }
-        guard let stt else {
+        if state == .thinking {
+            // A new dictation outranks a stuck/slow one: cancel it and record.
+            processTask?.cancel()
+            processTask = nil
+            state = .idle
+        }
+        guard state == .idle else { return } // already listening
+        guard stt != nil else {
             notify("No STT provider configured — open Preferences.")
             return
         }
-        _ = stt
+        session += 1
         state = .listening
+        playChime("Tink")
         do {
             try recorder.start()
         } catch {
             state = .idle
             notify("Mic error: \(error.localizedDescription)")
+            return
         }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.state == .listening else { return }
+            self.onRelease()
+            self.notify("Recording capped at \(Int(Self.maxRecordingSeconds))s")
+        }
+        autoStopWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.maxRecordingSeconds, execute: work)
     }
 
     private func onRelease() {
         guard state == .listening else { return }
-        let url = recorder.stop()
+        autoStopWork?.cancel()
+        autoStopWork = nil
+        playChime("Pop")
         state = .thinking
-        Task { await self.process(url) }
+        let id = session
+        processTask = Task {
+            let url = await self.recorder.stop()
+            await self.process(url, session: id)
+        }
     }
 
-    private func process(_ url: URL?) async {
-        defer { Task { @MainActor in self.state = .idle } }
+    private func process(_ url: URL?, session id: Int) async {
+        defer {
+            // Only reset state if this pipeline is still the current one — a
+            // cancelled-and-superseded run must not stomp "listening".
+            if id == session, state == .thinking { state = .idle }
+        }
         guard let url, let stt else {
             NSLog("[Listen] process: no url or no stt (url=\(url?.path ?? "nil"))")
             return
         }
+        defer { try? FileManager.default.removeItem(at: url) }
         let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? Int ?? -1
         NSLog("[Listen] process: audio file=\(url.lastPathComponent) bytes=\(size)")
         do {
-            let raw = try await stt.transcribe(url)
+            let raw = try await withTimeout(30) { try await stt.transcribe(url) }
             NSLog("[Listen] process: stt returned \(raw.count) chars: \(raw.prefix(80))")
             var text = raw
             if let interpreter, !text.isEmpty {
                 do {
-                    text = try await interpreter.interpret(text, prompt: settings.cleanup_prompt)
-                    NSLog("[Listen] process: interpreter returned \(text.count) chars")
+                    // Cleanup is best-effort polish: a short leash, and any
+                    // failure or timeout falls back to the raw transcript
+                    // instead of losing the dictation.
+                    let prompt = settings.cleanup_prompt
+                    let input = text
+                    let cleaned = try await withTimeout(10) { try await interpreter.interpret(input, prompt: prompt) }
+                    NSLog("[Listen] process: interpreter returned \(cleaned.count) chars")
+                    // Guard against over-pruning: if cleanup collapsed a real
+                    // transcription to empty, keep the raw STT text rather
+                    // than silently dropping the paste.
+                    text = cleaned.isEmpty ? raw : cleaned
                 } catch {
                     NSLog("[Listen] interpreter failed: \(error.localizedDescription) — using raw")
                 }
             }
-            try? FileManager.default.removeItem(at: url)
+            guard id == session, !Task.isCancelled else {
+                NSLog("[Listen] process: session \(id) superseded, dropping result")
+                return
+            }
             if text.isEmpty {
                 notify("Empty transcription — check microphone permission")
                 NSLog("[Listen] process: empty text, nothing to paste")
                 return
             }
             NSLog("[Listen] process: pasting \(text.count) chars")
-            await MainActor.run {
-                Paster.paste(text, restoreClipboard: true)
-            }
+            Paster.paste(text)
+        } catch is CancellationError {
+            NSLog("[Listen] process: session \(id) cancelled")
         } catch {
+            guard id == session else { return }
             notify("Transcription failed: \(error.localizedDescription)")
             NSLog("[Listen] process error: \(error)")
         }
@@ -242,12 +323,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - User notifications via menubar title
 
+    /// Shows a transient message in the menubar without racing state changes.
+    /// The old implementation swapped raw titles, which (a) let the deferred
+    /// idle-reset erase error messages after one runloop tick and (b) restored
+    /// a stale "thinking" title that then stuck forever — the app looked hung.
     private func notify(_ msg: String) {
-        guard let button = statusItem.button else { return }
-        let prior = button.title
-        button.title = msg
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-            button.title = prior
+        transientMessage = msg
+        renderStatus()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+            guard let self, self.transientMessage == msg else { return }
+            self.transientMessage = nil
+            self.renderStatus()
         }
     }
 }

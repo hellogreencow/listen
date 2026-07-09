@@ -7,7 +7,7 @@ enum Paster {
     /// restore raced the synth Cmd+V (300 ms was eating the paste), and
     /// leaving the transcript on the clipboard means even if synth delivery
     /// fails, the user can manually Cmd+V and get the text.
-    static func paste(_ text: String, restoreClipboard: Bool = false) {
+    static func paste(_ text: String) {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(text, forType: .string)

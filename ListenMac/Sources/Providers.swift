@@ -1,16 +1,36 @@
 import Foundation
+import Speech
+import AVFoundation
 
 enum ProviderError: LocalizedError {
     case missingKey(String)
     case http(Int, String)
     case decode(String)
+    case timeout(Double)
 
     var errorDescription: String? {
         switch self {
         case .missingKey(let p): return "Missing API key for \(p)"
         case .http(let code, let body): return "HTTP \(code): \(body.prefix(200))"
         case .decode(let m): return "Decode failed: \(m)"
+        case .timeout(let s): return "timed out after \(Int(s))s"
         }
+    }
+}
+
+/// Runs `op` with a hard deadline. On expiry the operation's task is
+/// cancelled (URLSession and Speech async APIs all honor cancellation) and
+/// ProviderError.timeout is thrown. Without this, a hung provider left the
+/// app in "thinking" forever with the hotkey dead.
+func withTimeout<T: Sendable>(_ seconds: Double, _ op: @escaping @Sendable () async throws -> T) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask { try await op() }
+        group.addTask {
+            try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            throw ProviderError.timeout(seconds)
+        }
+        defer { group.cancelAll() }
+        return try await group.next()!
     }
 }
 
@@ -140,6 +160,10 @@ struct ChatInterpreter: Interpreter {
 
     func interpret(_ text: String, prompt: String) async throws -> String {
         let filled = prompt.replacingOccurrences(of: "{text}", with: text)
+        // Cleanup output is ≈ input length. chars/2 is ~2× the input's token
+        // count — generous headroom without an arbitrary fixed cap that would
+        // truncate long dictations.
+        let maxTokens = min(16_384, max(1_024, filled.count / 2))
         let payload: [String: Any] = [
             "model": model,
             "messages": [
@@ -147,7 +171,7 @@ struct ChatInterpreter: Interpreter {
                 ["role": "user", "content": filled],
             ],
             "temperature": 0.1,
-            "max_tokens": 2048,
+            "max_tokens": maxTokens,
         ]
         var req = URLRequest(url: endpoint)
         req.httpMethod = "POST"
@@ -171,11 +195,67 @@ struct ChatInterpreter: Interpreter {
     }
 }
 
+// MARK: - Apple on-device (SpeechAnalyzer + SpeechTranscriber)
+
+/// Local STT using Apple's SpeechAnalyzer (macOS 26+). No network, no API key,
+/// no rate limits. Output already has proper punctuation/capitalization, so
+/// the LLM cleanup pass is unnecessary downstream. Empirically ~900 ms for a
+/// 3-second clip on Apple Silicon (see tools/speech-bench/).
+@available(macOS 26.0, *)
+struct AppleSTT: STTProvider {
+    private static let locale = Locale(identifier: "en-US")
+
+    /// One-time authorization + model-asset check, shared across utterances.
+    /// The old code blocked a thread on a semaphore for authorization and ran
+    /// the asset-installation check on every transcription — a mid-dictation
+    /// network stall with no escape. A failed setup is retried on the next
+    /// call rather than cached forever.
+    @MainActor private static var setupTask: Task<Void, Error>?
+
+    @MainActor
+    private static func ensureReady() async throws {
+        if let t = setupTask {
+            if (try? await t.value) != nil { return }
+        }
+        let t = Task {
+            let status = await withCheckedContinuation { cont in
+                SFSpeechRecognizer.requestAuthorization { cont.resume(returning: $0) }
+            }
+            guard status == .authorized else {
+                throw ProviderError.http(403, "Speech Recognition permission not granted")
+            }
+            let probe = SpeechTranscriber(locale: locale, preset: .transcription)
+            if let installReq = try await AssetInventory.assetInstallationRequest(supporting: [probe]) {
+                try await installReq.downloadAndInstall()
+            }
+        }
+        setupTask = t
+        try await t.value
+    }
+
+    func transcribe(_ url: URL) async throws -> String {
+        try await Self.ensureReady()
+        let transcriber = SpeechTranscriber(locale: Self.locale, preset: .transcription)
+        let analyzer = SpeechAnalyzer(modules: [transcriber])
+        let audioFile = try AVAudioFile(forReading: url)
+        try await analyzer.start(inputAudioFile: audioFile, finishAfterFile: true)
+
+        var pieces: [String] = []
+        for try await result in transcriber.results {
+            pieces.append(String(result.text.characters))
+        }
+        return pieces.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
 // MARK: - Factory
 
 enum ProviderFactory {
     static func stt(_ s: AppSettings) throws -> STTProvider {
         switch s.stt_provider {
+        case "apple":
+            if #available(macOS 26.0, *) { return AppleSTT() }
+            throw ProviderError.http(0, "Apple on-device STT requires macOS 26+")
         case "openai":
             guard !s.openai_api_key.isEmpty else { throw ProviderError.missingKey("openai") }
             return OpenAISTT(apiKey: s.openai_api_key, model: s.openai_whisper_model)
