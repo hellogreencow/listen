@@ -39,6 +39,11 @@ final class Recorder: NSObject, AVAudioRecorderDelegate {
         finish() // never let a straggler continuation alias the new one
         guard let r = recorder else { return lastURL }
         recorder = nil
+        // Capture THIS recording's file before suspending: a rapid
+        // cancel-and-redictate can call start() during the await, and
+        // returning `lastURL` afterwards would hand back (and later delete)
+        // the NEW recording's file.
+        let url = r.url
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             finishContinuation = cont
             r.stop()
@@ -46,7 +51,20 @@ final class Recorder: NSObject, AVAudioRecorderDelegate {
                 self?.finish()
             }
         }
-        return lastURL
+        return url
+    }
+
+    /// Stop and throw away the current recording without waiting for
+    /// finalization — for accidental sub-minimum taps. Synchronous with
+    /// respect to `recorder`, so an immediate re-press can't race it.
+    func discard() {
+        guard let r = recorder else { return }
+        recorder = nil
+        r.stop()
+        let url = r.url
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 
     private func finish() {

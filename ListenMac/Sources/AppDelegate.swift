@@ -27,10 +27,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// never paste stale text or stomp the menubar state of a newer one.
     private var session = 0
     private var autoStopWork: DispatchWorkItem?
+    private var recordStart: Date?
 
     /// Hard cap so a missed key-release (screen lock, secure input) can't
     /// record forever and then upload minutes of audio.
     private static let maxRecordingSeconds: Double = 180
+
+    /// Accidental key brushes: below this there's no usable speech, so skip
+    /// the network round-trip (and the hallucinated "you" it tends to return).
+    private static let minRecordingSeconds: Double = 0.3
 
     enum State { case idle, listening, thinking }
 
@@ -59,16 +64,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Pre-establish TLS connections to the configured provider hosts so the
-    /// first hold-to-record doesn't pay handshake latency (~100-200 ms).
+    /// Hosts the current settings will actually talk to. Prewarming anything
+    /// else is wasted traffic.
+    private var providerHosts: [String] {
+        var hosts: Set<String> = []
+        switch settings.stt_provider {
+        case "elevenlabs": hosts.insert("https://api.elevenlabs.io")
+        case "openai":     hosts.insert("https://api.openai.com")
+        case "groq":       hosts.insert("https://api.groq.com")
+        default: break // apple = on-device, no network
+        }
+        if settings.cleanup_enabled {
+            switch settings.interpreter_provider {
+            case "openai":     hosts.insert("https://api.openai.com")
+            case "groq":       hosts.insert("https://api.groq.com")
+            case "openrouter": hosts.insert("https://openrouter.ai")
+            default: break
+            }
+        }
+        return Array(hosts)
+    }
+
+    /// Pre-establish DNS + TCP + TLS to the configured provider hosts.
+    /// Measured cold-start cost is ~2 s (1.4 s DNS + 0.4 s connect + 0.15 s
+    /// TLS), which URLSession.shared then amortizes via keep-alive. Called at
+    /// launch AND on every hotkey press: the handshake runs while the user is
+    /// still speaking, so the upload starts on a warm socket.
     private func prewarmConnections() {
-        let hosts: [String] = [
-            "https://api.elevenlabs.io",
-            "https://api.openai.com",
-            "https://api.groq.com",
-            "https://openrouter.ai",
-        ]
-        for host in hosts {
+        for host in providerHosts {
             guard let url = URL(string: host) else { continue }
             Task.detached {
                 var req = URLRequest(url: url)
@@ -171,9 +194,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Subtle system sound on record start/stop, gated by settings.sound_enabled.
+    /// Instances are cached — NSSound(named:) hits disk on every call otherwise.
+    private static var chimes: [String: NSSound] = [:]
     private func playChime(_ name: String) {
         guard settings.sound_enabled else { return }
-        NSSound(named: NSSound.Name(name))?.play()
+        guard let sound = Self.chimes[name] ?? {
+            let s = NSSound(named: NSSound.Name(name))
+            Self.chimes[name] = s
+            return s
+        }() else { return }
+        if sound.isPlaying { sound.stop() }
+        sound.play()
     }
 
     @objc private func grantAccessibility() {
@@ -237,6 +268,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         session += 1
         state = .listening
+        recordStart = Date()
+        prewarmConnections() // handshake in parallel with the user speaking
         playChime("Tink")
         do {
             try recorder.start()
@@ -259,6 +292,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         autoStopWork?.cancel()
         autoStopWork = nil
         playChime("Pop")
+        if let start = recordStart, Date().timeIntervalSince(start) < Self.minRecordingSeconds {
+            recorder.discard()
+            state = .idle
+            NSLog("[Listen] release: tap under \(Self.minRecordingSeconds)s, discarded")
+            return
+        }
         state = .thinking
         let id = session
         processTask = Task {
@@ -280,9 +319,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         defer { try? FileManager.default.removeItem(at: url) }
         let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? Int ?? -1
         NSLog("[Listen] process: audio file=\(url.lastPathComponent) bytes=\(size)")
+        let t0 = Date()
+        func ms(_ since: Date) -> Int { Int(Date().timeIntervalSince(since) * 1000) }
         do {
-            let raw = try await withTimeout(30) { try await stt.transcribe(url) }
-            NSLog("[Listen] process: stt returned \(raw.count) chars: \(raw.prefix(80))")
+            let raw = try await transcribeWithRetry(stt, url)
+            NSLog("[Listen] process: stt returned \(raw.count) chars in \(ms(t0))ms: \(raw.prefix(80))")
             var text = raw
             if let interpreter, !text.isEmpty {
                 do {
@@ -291,8 +332,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // instead of losing the dictation.
                     let prompt = settings.cleanup_prompt
                     let input = text
+                    let t1 = Date()
                     let cleaned = try await withTimeout(10) { try await interpreter.interpret(input, prompt: prompt) }
-                    NSLog("[Listen] process: interpreter returned \(cleaned.count) chars")
+                    NSLog("[Listen] process: interpreter returned \(cleaned.count) chars in \(ms(t1))ms")
                     // Guard against over-pruning: if cleanup collapsed a real
                     // transcription to empty, keep the raw STT text rather
                     // than silently dropping the paste.
@@ -310,7 +352,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSLog("[Listen] process: empty text, nothing to paste")
                 return
             }
-            NSLog("[Listen] process: pasting \(text.count) chars")
+            NSLog("[Listen] process: pasting \(text.count) chars, total \(ms(t0))ms after release")
             Paster.paste(text)
         } catch is CancellationError {
             NSLog("[Listen] process: session \(id) cancelled")
@@ -321,13 +363,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// STT under the usual 30 s deadline, with one immediate retry when the
+    /// failure is a transient transport error (connection dropped, DNS blip,
+    /// dead keep-alive socket). Timeouts and HTTP errors are NOT retried, so
+    /// the worst case doesn't grow.
+    private func transcribeWithRetry(_ stt: STTProvider, _ url: URL) async throws -> String {
+        do {
+            return try await withTimeout(30) { try await stt.transcribe(url) }
+        } catch let e as URLError where Self.transientCodes.contains(e.code) {
+            NSLog("[Listen] stt transient network error (\(e.code.rawValue)) — retrying once")
+            return try await withTimeout(30) { try await stt.transcribe(url) }
+        }
+    }
+
+    private static let transientCodes: Set<URLError.Code> = [
+        .networkConnectionLost, .cannotConnectToHost, .dnsLookupFailed,
+        .cannotFindHost, .notConnectedToInternet, .secureConnectionFailed,
+    ]
+
     // MARK: - User notifications via menubar title
 
     /// Shows a transient message in the menubar without racing state changes.
     /// The old implementation swapped raw titles, which (a) let the deferred
     /// idle-reset erase error messages after one runloop tick and (b) restored
     /// a stale "thinking" title that then stuck forever — the app looked hung.
-    private func notify(_ msg: String) {
+    private func notify(_ message: String) {
+        // A raw HTTP error body can be hundreds of chars; keep the menubar sane.
+        let msg = message.count > 70 ? String(message.prefix(67)) + "…" : message
         transientMessage = msg
         renderStatus()
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in

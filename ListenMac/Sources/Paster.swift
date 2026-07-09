@@ -2,6 +2,15 @@ import AppKit
 import Carbon.HIToolbox
 
 enum Paster {
+    /// Compiled once — NSAppleScript(source:) re-compiles on every call
+    /// otherwise, which costs tens of ms per paste. Main-thread only.
+    private static let pasteScript: NSAppleScript? = {
+        let s = NSAppleScript(source:
+            "tell application \"System Events\" to keystroke \"v\" using command down")
+        s?.compileAndReturnError(nil)
+        return s
+    }()
+
     /// Put the transcribed text on the clipboard, fire Cmd+V, and leave the
     /// text there. We intentionally DO NOT restore the prior clipboard — that
     /// restore raced the synth Cmd+V (300 ms was eating the paste), and
@@ -19,9 +28,8 @@ enum Paster {
         // documented "bulletproof" path (see AGENTS.md). First run prompts
         // for Automation permission against System Events; granted thereafter.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            let src = "tell application \"System Events\" to keystroke \"v\" using command down"
             var err: NSDictionary?
-            let result = NSAppleScript(source: src)?.executeAndReturnError(&err)
+            let result = pasteScript?.executeAndReturnError(&err)
             // Direct file log — bypasses os_log privacy redaction so we can
             // actually read the AppleScript outcome.
             let line = "\(Date()) result=\(String(describing: result)) err=\(String(describing: err))\n"

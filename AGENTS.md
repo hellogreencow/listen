@@ -254,3 +254,9 @@ Common error codes you'll see in `/tmp/listen-paste.log`:
   secure-input field eating the flagsChanged event) otherwise records forever.
   Note: secure input fields block NSEvent global monitors entirely, so the
   hotkey is genuinely dead while a password field is focused. Not a bug.
+
+- **Connections prewarm on every hotkey press** (targeted at the configured
+  providers only). Cold DNS+TCP+TLS measured ~2 s; pressing the hotkey fires
+  the handshakes while the user is speaking so the upload hits a warm socket.
+  Don't "optimize away" the per-press prewarm — launch-time prewarm alone
+  dies to keep-alive expiry.
