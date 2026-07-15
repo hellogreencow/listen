@@ -34,11 +34,44 @@ func withTimeout<T: Sendable>(_ seconds: Double, _ op: @escaping @Sendable () as
     }
 }
 
-protocol STTProvider {
-    func transcribe(_ url: URL) async throws -> String
+struct TranscriptSegment: Codable, Identifiable, Sendable {
+    var id: String = UUID().uuidString
+    var chunk: Int = 0
+    var start: Double
+    var end: Double
+    var speaker: String
+    var text: String
 }
 
-protocol Interpreter {
+struct DetailedTranscript: Codable, Sendable {
+    var segments: [TranscriptSegment]
+    var diarization: String
+
+    var text: String { segments.map(\.text).joined(separator: " ") }
+}
+
+protocol STTProvider: Sendable {
+    func transcribe(_ url: URL) async throws -> String
+    func transcribeDetailed(_ url: URL) async throws -> DetailedTranscript
+}
+
+extension STTProvider {
+    func transcribeDetailed(_ url: URL) async throws -> DetailedTranscript {
+        let text = try await transcribe(url)
+        let duration: Double
+        if let file = try? AVAudioFile(forReading: url), file.fileFormat.sampleRate > 0 {
+            duration = Double(file.length) / file.fileFormat.sampleRate
+        } else {
+            duration = 0
+        }
+        return DetailedTranscript(
+            segments: text.isEmpty ? [] : [TranscriptSegment(start: 0, end: duration, speaker: "Speaker 1", text: text)],
+            diarization: "Single-speaker fallback: the selected provider did not return speaker labels."
+        )
+    }
+}
+
+protocol Interpreter: Sendable {
     func interpret(_ text: String, prompt: String) async throws -> String
 }
 
@@ -66,11 +99,19 @@ struct ElevenLabsSTT: STTProvider {
     let model: String
 
     func transcribe(_ url: URL) async throws -> String {
+        try await transcribeDetailed(url).text
+    }
+
+    func transcribeDetailed(_ url: URL) async throws -> DetailedTranscript {
         let audio = try Data(contentsOf: url)
         let boundary = "----Listen\(UUID().uuidString)"
         let body = multipart(
             boundary: boundary,
-            fields: ["model_id": model],
+            fields: [
+                "model_id": model,
+                "diarize": "true",
+                "tag_audio_events": "false",
+            ],
             file: ("file", url.lastPathComponent, "audio/m4a", audio)
         )
         var req = URLRequest(url: URL(string: "https://api.elevenlabs.io/v1/speech-to-text")!)
@@ -85,10 +126,69 @@ struct ElevenLabsSTT: STTProvider {
             throw ProviderError.http(code, String(data: data, encoding: .utf8) ?? "")
         }
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let text = json["text"] as? String else {
+              let fullText = json["text"] as? String else {
             throw ProviderError.decode("no text field")
         }
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let words = json["words"] as? [[String: Any]], !words.isEmpty else {
+            let text = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
+            return DetailedTranscript(
+                segments: text.isEmpty ? [] : [TranscriptSegment(start: 0, end: 0, speaker: "Speaker 1", text: text)],
+                diarization: "ElevenLabs returned no word-level speaker labels for this audio."
+            )
+        }
+
+        var speakerNames: [String: String] = [:]
+        func displaySpeaker(_ raw: String) -> String {
+            if let existing = speakerNames[raw] { return existing }
+            let name = "Speaker \(speakerNames.count + 1)"
+            speakerNames[raw] = name
+            return name
+        }
+        var segments: [TranscriptSegment] = []
+        var currentSpeaker = ""
+        var currentText = ""
+        var currentStart: Double = 0
+        var currentEnd: Double = 0
+
+        func flush() {
+            let clean = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !clean.isEmpty else { return }
+            segments.append(TranscriptSegment(start: currentStart, end: currentEnd,
+                                              speaker: currentSpeaker.isEmpty ? "Speaker 1" : currentSpeaker,
+                                              text: clean))
+            currentText = ""
+        }
+
+        for word in words {
+            let type = word["type"] as? String ?? "word"
+            guard type == "word" || type == "spacing" else { continue }
+            let token = word["text"] as? String ?? ""
+            if type == "spacing" {
+                if !currentText.isEmpty { currentText += token }
+                continue
+            }
+            let rawSpeaker: String
+            if let value = word["speaker_id"] as? String { rawSpeaker = value }
+            else if let value = word["speaker_id"] as? NSNumber { rawSpeaker = value.stringValue }
+            else { rawSpeaker = "speaker_0" }
+            let speaker = displaySpeaker(rawSpeaker)
+            let start = word["start"] as? Double ?? currentEnd
+            let end = word["end"] as? Double ?? start
+            if !currentText.isEmpty && speaker != currentSpeaker { flush() }
+            if currentText.isEmpty { currentStart = start; currentSpeaker = speaker }
+            currentEnd = max(currentEnd, end)
+            if currentText.isEmpty || currentText.last?.isWhitespace == true { currentText += token }
+            else { currentText += " " + token }
+        }
+        flush()
+        if segments.isEmpty {
+            let text = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty { segments = [TranscriptSegment(start: 0, end: 0, speaker: "Speaker 1", text: text)] }
+        }
+        return DetailedTranscript(segments: segments,
+                                  diarization: speakerNames.count > 1
+                                    ? "Word-level speaker labels supplied by ElevenLabs Scribe."
+                                    : "ElevenLabs detected one speaker in this audio.")
     }
 }
 
@@ -272,6 +372,12 @@ enum ProviderFactory {
 
     static func interpreter(_ s: AppSettings) throws -> Interpreter? {
         guard s.cleanup_enabled else { return nil }
+        return try assistant(s)
+    }
+
+    /// Direct LLM used by Quick Thought, wake conversations, reports, and
+    /// on-demand analysis. It is available even when dictation cleanup is off.
+    static func assistant(_ s: AppSettings) throws -> Interpreter? {
         switch s.interpreter_provider {
         case "openai":
             guard !s.openai_api_key.isEmpty else { throw ProviderError.missingKey("openai") }

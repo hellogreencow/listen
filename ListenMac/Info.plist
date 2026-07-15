@@ -11,9 +11,9 @@
     <key>CFBundleIdentifier</key>
     <string>com.listen.app</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
+    <string>2.0.1</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>3</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleIconFile</key>
@@ -32,5 +32,14 @@
     <string>Listen needs Accessibility to detect your push-to-talk hotkey and paste the transcript.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>Listen transcribes your voice on-device using Apple's speech recognition.</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.listen.analysis</string>
+            <key>CFBundleURLSchemes</key>
+            <array><string>listen</string></array>
+        </dict>
+    </array>
 </dict>
 </plist>

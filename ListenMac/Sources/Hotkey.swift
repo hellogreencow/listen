@@ -9,13 +9,19 @@ import Carbon.HIToolbox
 ///     is sufficient (no Input Monitoring required).
 ///
 /// Either way, the user never sees the Input Monitoring prompt.
+@MainActor
 final class Hotkey {
     var onPress: () -> Void = {}
     var onRelease: () -> Void = {}
+    var onCancel: () -> Void = {}
+    var onQuickThoughtPress: () -> Void = {}
+    var onQuickThoughtRelease: () -> Void = {}
 
     private var globalMonitor: Any?
     private var localMonitor: Any?
     private var pressed = false
+    private var quickPressed = false
+    private var leftCommandDown = false
     private var keyName: String = "ctrl_r"
 
     /// Modifier hotkeys → (NSEvent.ModifierFlags element to test, virtual keycode of physical key).
@@ -56,14 +62,17 @@ final class Hotkey {
     func start(keyName: String) {
         stop()
         self.keyName = keyName
-
-        if let (flag, keyCode) = Hotkey.modifierMap[keyName] {
-            installModifierMonitor(flag: flag, keyCode: keyCode)
-        } else if let keyCode = Hotkey.keyCodeMap[keyName] {
-            installFunctionKeyMonitor(keyCode: keyCode)
-        } else {
+        if Hotkey.modifierMap[keyName] == nil && Hotkey.keyCodeMap[keyName] == nil {
             NSLog("[Listen] unknown hotkey '\(keyName)' — defaulting to alt_r")
-            installModifierMonitor(flag: .option, keyCode: kVK_RightOption)
+            self.keyName = "alt_r"
+        }
+
+        let mask: NSEvent.EventTypeMask = [.flagsChanged, .keyDown, .keyUp]
+        let handler: (NSEvent) -> Void = { [weak self] event in self?.handle(event) }
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: handler)
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { event in
+            handler(event)
+            return event
         }
         NSLog("[Listen] hotkey active: \(keyName)")
     }
@@ -74,35 +83,42 @@ final class Hotkey {
         globalMonitor = nil
         localMonitor = nil
         pressed = false
+        quickPressed = false
+        leftCommandDown = false
     }
 
-    // MARK: - Modifier-key push-to-talk (no permissions needed)
+    // MARK: - Event routing
 
-    private func installModifierMonitor(flag: NSEvent.ModifierFlags, keyCode: Int) {
-        let handler: (NSEvent) -> Void = { [weak self] event in
-            guard let self else { return }
-            guard Int(event.keyCode) == keyCode else { return }
-            self.fire(down: event.modifierFlags.contains(flag))
-        }
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged, handler: handler)
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
-            handler(event)
-            return event
-        }
-    }
-
-    // MARK: - Function-key push-to-talk
-
-    private func installFunctionKeyMonitor(keyCode: Int) {
-        let press: (NSEvent) -> Void = { [weak self] event in
-            guard let self, Int(event.keyCode) == keyCode else { return }
-            self.fire(down: event.type == .keyDown)
+    private func handle(_ event: NSEvent) {
+        let code = Int(event.keyCode)
+        if event.type == .flagsChanged, code == kVK_Command {
+            leftCommandDown = event.modifierFlags.contains(.command)
         }
 
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .keyUp], handler: press)
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { event in
-            press(event)
-            return event
+        // Quick Thought is a fixed muscle-memory chord independent of the
+        // configurable dictation key: hold Left Command + either Option.
+        let chordDown = leftCommandDown && event.modifierFlags.contains(.option)
+        if chordDown && !quickPressed {
+            quickPressed = true
+            if pressed {
+                pressed = false
+                onCancel()
+            }
+            onQuickThoughtPress()
+        } else if !chordDown && quickPressed {
+            quickPressed = false
+            onQuickThoughtRelease()
+        }
+        // Never reinterpret either edge of the Quick Thought chord as a
+        // dictation edge when the configurable key is one of its modifiers.
+        if chordDown || quickPressed { return }
+
+        if let (flag, keyCode) = Hotkey.modifierMap[keyName],
+           event.type == .flagsChanged, code == keyCode {
+            fire(down: event.modifierFlags.contains(flag))
+        } else if let keyCode = Hotkey.keyCodeMap[keyName], code == keyCode,
+                  event.type == .keyDown || event.type == .keyUp {
+            fire(down: event.type == .keyDown)
         }
     }
 
@@ -111,10 +127,10 @@ final class Hotkey {
     private func fire(down: Bool) {
         if down && !pressed {
             pressed = true
-            DispatchQueue.main.async { self.onPress() }
+            onPress()
         } else if !down && pressed {
             pressed = false
-            DispatchQueue.main.async { self.onRelease() }
+            onRelease()
         }
     }
 }

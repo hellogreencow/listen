@@ -264,3 +264,79 @@ Common error codes you'll see in `/tmp/listen-paste.log`:
   the handshakes while the user is speaking so the upload hits a warm socket.
   Don't "optimize away" the per-press prewarm — launch-time prewarm alone
   dies to keep-alive expiry.
+
+## Voice-merge invariants (Listen 2.0)
+
+- **`AudioEngine.shared` is the only microphone owner.** Dictation/Quick
+  Thought use `Recorder` as a short-file sink, wake word consumes tap buffers,
+  and conversation mode uses a rolling sink. Never reintroduce
+  `AVAudioRecorder` or a second `AVAudioEngine`.
+
+- **Tap callbacks must remain real-time safe.** AAC writing is dispatched to a
+  serial writer queue; conversation fan-out only enqueues. Never perform disk,
+  network, JSON, or speech-analysis work directly inside `consumeTap`.
+
+- **Consumer tokens define mic privacy.** Wake and conversation hold persistent
+  tokens; hold captures hold a short token. When the set is empty the engine
+  stops after the two-second anti-churn grace and logs `mic closed`. Wake word
+  defaults off and is the only path that may request Speech permission just by
+  being enabled.
+
+- **Do not couple Listen back to OpenClaw.** Direct configured LLM calls are the
+  v1 fast path. Identity, gateway WebSockets, screen context, native actions,
+  and agent tools from `voice-daemon.swift` stay out. A future agent mode needs
+  an explicit optional local-socket boundary.
+
+- **Long conversations roll to disk.** There is no duration cap and no whole-
+  session in-memory buffer. Reports must remain self-contained under
+  `~/.listen/sessions/<id>/`, with no remote JS/CSS/assets. Anonymous speaker
+  ids from separate provider requests must be labeled per audio part rather
+  than falsely merged across chunks.
+
+- **Notes are append-only JSONL.** Quick Thought, wake turns, and completed
+  conversation reports append to `~/.listen/notes/notes.jsonl`. One malformed
+  final line must never make earlier notes unreadable.
+
+- **Assistant memory is local-first graph RAG.** Quick Thought and wake turns
+  retrieve immediate conversational context plus lexically/graph-related notes
+  before the provider call. `knowledge-graph.json` is bounded, derived, and
+  rebuildable from the JSONL ledger; never make it authoritative, add a remote
+  vector-store dependency, or put memory work on the dictation path. Only the
+  small retrieved prompt block may leave the Mac for provider processing.
+
+- **Spoken replies use xAI TTS by default.** Voice `o79hvd0m` and the
+  `/v1/tts` MP3 24 kHz/128 kbps request match the retired daemon. Keep
+  playback and in-flight network work interruptible for barge-in, never log
+  the xAI key, and retain system synthesis as an automatic fallback.
+
+- **Quick Thought uses the compact response card.** It stays non-activating,
+  accepts native two-finger and click-drag swipe dismissal, and must not make
+  wake, microphone-test, or conversation-complete response panels compact.
+  Its borderless panel is transparent and clips a continuous 14-point rounded
+  material surface; do not restore an opaque rectangular panel background.
+
+- **The menubar active color uses `attributedTitle`.** `renderStatus()` owns the
+  animation timer; it must stop when all activity is idle. Continue routing
+  temporary messages through `transientMessage`, never raw title mutation. The
+  item reserves the measured full `listening` width at all times and uses the
+  compact status font plus a right gutter; widening it can cause macOS to hide
+  Listen when its microphone privacy item enters a crowded notched menu bar.
+  `Listen_Status_v1` is also a compatibility identity: seed its preferred
+  position to ordinal zero *before* creating the `NSStatusItem`, then assign it
+  as `autosaveName`. This keeps Listen beside the Control Center end when the
+  privacy module arrives while preserving any later Command-dragged position.
+  Do not rename it, seed after item creation, or overwrite an existing value.
+  Active text is a per-character horizontal gradient selected in Appearance;
+  never collapse it back to one color for the whole word. Style, speed,
+  intensity, and bounded breathing room are backward-compatible config fields.
+  The fixed width must be recalculated immediately when padding changes.
+
+- **Production runtime truth is `/tmp/listen.err.log`.** It is bounded and
+  private. Record engine acquire/close, capture boundaries, wake status, report
+  completion, and failures there. GUI automation app lists have returned stale
+  running state; verify deployments with the real PID/start time and this log.
+
+- **Build and stress gates are strict Swift 6.** `build.sh` treats warnings as
+  errors. Run `ListenMac/Tests/run-stress-tests.sh`, `git diff --check`, plist
+  lint, signing verification, and real signed-app mic teardown checks before
+  replacing `/Applications/Listen.app`.
