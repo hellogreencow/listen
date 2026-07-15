@@ -48,26 +48,40 @@ EOF
 fi
 
 # ─── 2. Compile ─────────────────────────────────────────────────────────────
-echo "→ Compiling Swift sources…"
+echo "→ Compiling Universal 2 Swift sources…"
 rm -rf "$BUILD_DIR"
 mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
 
 SDK=$(xcrun --show-sdk-path --sdk macosx)
-swiftc \
-  -O \
-  -swift-version 6 \
-  -warnings-as-errors \
-  -target arm64-apple-macos13.0 \
-  -sdk "$SDK" \
-  -framework AppKit \
-  -framework AVFoundation \
-  -framework Speech \
-  -framework CoreAudio \
-  -framework SwiftUI \
-  -framework Carbon \
-  -framework IOKit \
-  -o "$APP_PATH/Contents/MacOS/$APP_NAME" \
-  Sources/*.swift
+SLICE_DIR="$BUILD_DIR/slices"
+mkdir -p "$SLICE_DIR"
+
+for ARCH in arm64 x86_64; do
+  echo "   • $ARCH"
+  swiftc \
+    -O \
+    -swift-version 6 \
+    -warnings-as-errors \
+    -target "$ARCH-apple-macos13.0" \
+    -sdk "$SDK" \
+    -framework AppKit \
+    -framework AVFoundation \
+    -framework Speech \
+    -framework CoreAudio \
+    -framework SwiftUI \
+    -framework Carbon \
+    -framework IOKit \
+    -o "$SLICE_DIR/$APP_NAME-$ARCH" \
+    Sources/*.swift
+done
+
+xcrun lipo -create \
+  "$SLICE_DIR/$APP_NAME-arm64" \
+  "$SLICE_DIR/$APP_NAME-x86_64" \
+  -output "$APP_PATH/Contents/MacOS/$APP_NAME"
+xcrun lipo "$APP_PATH/Contents/MacOS/$APP_NAME" -verify_arch arm64 x86_64
+echo "   ✓ $(xcrun lipo -archs "$APP_PATH/Contents/MacOS/$APP_NAME")"
+rm -rf "$SLICE_DIR"
 
 # ─── 3. Bundle resources ────────────────────────────────────────────────────
 cp Info.plist "$APP_PATH/Contents/Info.plist"

@@ -4,6 +4,14 @@ Listen is the local-first voice surface for this Mac. A single native
 `AVAudioEngine` owns the microphone and fans its tap out to four modes without
 running competing recorders.
 
+## Download
+
+[Download the latest macOS release](https://github.com/hellogreencow/listen/releases/latest).
+The Universal 2 app runs natively on Apple silicon (`arm64`) and Intel
+(`x86_64`) Macs running macOS 13 or later. Releases are currently self-signed
+and not Apple-notarized; the release notes include the exact verification and
+first-launch steps.
+
 ## Four modes
 
 - **Dictation:** hold the configured key (Right Option by default), speak, and
@@ -130,8 +138,9 @@ four-minute deadline remain effective even if an adapter stops reading.
 
 ## Build
 
-The production app is native Swift and is built, bundled, and signed with the
-stable local certificate requirement documented in [AGENTS.md](AGENTS.md).
+The production app is native Swift, built as a Universal 2 binary for `arm64`
+and `x86_64`, and signed with the stable local certificate requirement
+documented in [AGENTS.md](AGENTS.md).
 Release gates intentionally run against the candidate bundle before it can
 replace the installed application:
 
@@ -142,6 +151,8 @@ ListenMac/Tests/run-stress-tests.sh
 git diff --check
 plutil -lint ListenMac/Info.plist
 codesign --verify --deep --strict ListenMac/build/Listen.app
+xcrun lipo ListenMac/build/Listen.app/Contents/MacOS/Listen \
+  -verify_arch arm64 x86_64
 codesign -d -r- ListenMac/build/Listen.app 2>&1 \
   | rg -F 'certificate leaf[subject.CN] = "Listen Local Signing"'
 
@@ -187,8 +198,10 @@ the real microphone:
 ListenMac/Tests/run-stress-tests.sh
 ```
 
-It compiles under the production concurrency settings, hammers queued AAC
-writes and route-rate changes, checks legacy config decoding, exercises
+It compiles for both supported architectures under the production concurrency
+settings, runs natively on the build host and under Rosetta when available,
+hammers queued AAC writes and route-rate changes, checks legacy config decoding,
+exercises
 wake-phrase, side-specific hotkey, multilingual token-spacing, and
 assistant-echo boundaries, verifies durable note-error propagation plus local
 graph/RAG recovery across 1,200 notes, verifies circular pre-roll and week-scale
