@@ -136,6 +136,7 @@ Release gates intentionally run against the candidate bundle before it can
 replace the installed application:
 
 ```bash
+set -euo pipefail
 ListenMac/build.sh
 ListenMac/Tests/run-stress-tests.sh
 git diff --check
@@ -145,18 +146,19 @@ codesign -d -r- ListenMac/build/Listen.app 2>&1 \
   | rg -F 'certificate leaf[subject.CN] = "Listen Local Signing"'
 
 # Exercise the signed candidate and prove its microphone lease tears down.
-osascript -e 'tell application "Listen" to quit' 2>/dev/null || true
+candidate="$(pwd)/ListenMac/build/Listen.app"
+osascript -e "tell application \"$candidate\" to quit" 2>/dev/null || true
 before=$(wc -c < /tmp/listen.err.log 2>/dev/null || echo 0)
-open ListenMac/build/Listen.app
+open "$candidate"
 sleep 1
-open -a ListenMac/build/Listen.app -u 'https://listen.local/test/microphone'
+open -a "$candidate" -u 'https://listen.local/test/microphone'
 sleep 8
 runtime_log=$(tail -c "+$((before + 1))" /tmp/listen.err.log)
 printf '%s\n' "$runtime_log" | rg 'mic opened'
 printf '%s\n' "$runtime_log" | rg 'mic closed'
-osascript -e 'tell application "Listen" to quit'
+osascript -e "tell application \"$candidate\" to quit"
 
-/usr/bin/ditto ListenMac/build/Listen.app /Applications/Listen.app
+/usr/bin/ditto "$candidate" /Applications/Listen.app
 open /Applications/Listen.app
 ```
 
