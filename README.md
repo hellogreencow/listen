@@ -76,6 +76,31 @@ When wake word and conversation recording are off and no hold capture is in
 flight, the engine releases the microphone after a two-second anti-churn grace
 period. No always-on daemon is required.
 
+## Reliability guarantees
+
+Dictation remains the priority path. Every hold capture receives a unique
+microphone lease, so rapidly pressing the hotkey again cannot be interrupted by
+an older recording that is still finalizing. Provider work is session-scoped
+and timed out; superseded work cannot paste text or overwrite the menubar state.
+
+The shared engine keeps at most 30 seconds of pre-roll in a fixed circular
+buffer. Once full, new tap buffers overwrite the oldest samples without shifting
+the whole allocation. Input-route sample-rate changes roll long recordings to a
+new AAC part and resample short recordings into their existing file format.
+
+Wake authorization and recognition tasks carry lifecycle generations. Turning
+wake word off invalidates pending permission callbacks, prevents stale callbacks
+from reopening the microphone, and defers recognition rotation while a spoken
+turn is in progress. Quick Thought separately tracks the physical Left Command
+bit, so holding or releasing Right Command cannot leave the chord armed.
+
+Local persistence is acknowledged only after `notes.jsonl` has been written,
+synchronized, and closed. Conversation report mutations reload and merge under
+a per-process lock so simultaneous section analyses do not erase one another.
+Quitting during a conversation delays AppKit termination until the active AAC
+writer and manifest are finalized; unfinished report processing resumes on the
+next launch and then appears in the native Conversations library.
+
 ## Providers
 
 Transcription supports Apple on-device SpeechTranscriber (macOS 26+),
@@ -104,7 +129,13 @@ stable local certificate requirement documented in [AGENTS.md](AGENTS.md):
 ```bash
 cd ListenMac
 ./build.sh
+/usr/bin/ditto build/Listen.app /Applications/Listen.app
+open /Applications/Listen.app
 ```
+
+The first launch requests only the permissions required by enabled features.
+Wake word stays off by default, so Speech Recognition and persistent microphone
+use are not activated merely by installing the app.
 
 The build uses Swift 6 with warnings as errors and preserves this designated
 requirement across rebuilds:
