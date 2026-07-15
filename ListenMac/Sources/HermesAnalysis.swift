@@ -20,31 +20,83 @@ enum HermesAnalysisError: LocalizedError, Sendable {
     }
 }
 
+/// Writes adapter input away from the process-monitoring thread. A Hermes
+/// adapter is an external executable and may stop draining stdin; keeping the
+/// writer isolated lets cancellation or the deadline terminate the child,
+/// close its read end, and unblock this write before teardown returns.
+private final class HermesStdinWriter: @unchecked Sendable {
+    private let handle: FileHandle
+    private let payload: Data
+    private let completion = DispatchGroup()
+
+    init(handle: FileHandle, payload: Data) {
+        self.handle = handle
+        self.payload = payload
+    }
+
+    func start() {
+        completion.enter()
+        DispatchQueue.global(qos: .utility).async { [self] in
+            defer {
+                try? handle.close()
+                completion.leave()
+            }
+            try? handle.write(contentsOf: payload)
+        }
+    }
+
+    func wait() {
+        completion.wait()
+    }
+}
+
 /// Optional bridge into the user's local Hermes installation. Integration is
 /// through Hermes's public one-shot CLI or a versioned stdin/stdout adapter;
 /// Listen never imports Hermes's private Python modules or repository layout.
 struct HermesInterpreter: Interpreter {
+    private static let maximumCLIArgumentBytes = 64 * 1_024
+
     private enum Runtime: Sendable {
         case adapter(URL)
         case cli(URL)
     }
 
-    static var isAvailable: Bool { runtime != nil }
+    static var isAvailable: Bool { adapterExecutable != nil || cliExecutable != nil }
 
-    private static var runtime: Runtime? {
+    private static var adapterExecutable: URL? {
         let environment = ProcessInfo.processInfo.environment
         if let configured = environment["LISTEN_HERMES_ADAPTER_V1"],
            FileManager.default.isExecutableFile(atPath: configured) {
-            return .adapter(URL(fileURLWithPath: configured))
+            return URL(fileURLWithPath: configured)
         }
-        if let adapter = executable(named: "listen-hermes-adapter-v1") { return .adapter(adapter) }
-        if let cli = executable(named: "hermes") { return .cli(cli) }
-        return nil
+        return executable(named: "listen-hermes-adapter-v1")
+    }
+
+    private static var cliExecutable: URL? {
+        executable(named: "hermes")
+    }
+
+    /// Keep normal one-shot requests comfortably below macOS's aggregate argv
+    /// limit. Larger conversation prompts must use the versioned stdin adapter
+    /// so they neither fail process launch nor appear in process arguments.
+    static func cliPromptFits(_ prompt: String) -> Bool {
+        prompt.utf8.count <= maximumCLIArgumentBytes
+    }
+
+    private static func runtime(for prompt: String) throws -> Runtime {
+        if let adapterExecutable { return .adapter(adapterExecutable) }
+        guard cliPromptFits(prompt) else {
+            throw HermesAnalysisError.failed(
+                "This report is too large for hermes --oneshot. Install listen-hermes-adapter-v1 to pass it privately over stdin."
+            )
+        }
+        guard let cliExecutable else { throw HermesAnalysisError.unavailable }
+        return .cli(cliExecutable)
     }
 
     func interpret(_ text: String, prompt: String) async throws -> String {
-        guard let runtime = Self.runtime else { throw HermesAnalysisError.unavailable }
         let filled = prompt.replacingOccurrences(of: "{text}", with: text)
+        let runtime = try Self.runtime(for: filled)
         let operation = Task.detached(priority: .userInitiated) {
             try run(runtime: runtime, prompt: filled)
         }
@@ -97,10 +149,28 @@ struct HermesInterpreter: Interpreter {
         process.standardOutput = output
         process.standardError = error
 
+        var inputWriter: HermesStdinWriter?
+        defer {
+            if let inputWriter {
+                inputWriter.wait()
+            } else if let input {
+                try? input.fileHandleForReading.close()
+                try? input.fileHandleForWriting.close()
+            }
+        }
+
         try process.run()
         if let input {
-            input.fileHandleForWriting.write(Data(prompt.utf8))
-            try? input.fileHandleForWriting.close()
+            // Process.run() has duplicated the read descriptor into the child.
+            // Closing the parent's copy ensures child termination produces
+            // EPIPE and releases a writer stalled on a full pipe buffer.
+            try? input.fileHandleForReading.close()
+            let writer = HermesStdinWriter(
+                handle: input.fileHandleForWriting,
+                payload: Data(prompt.utf8)
+            )
+            inputWriter = writer
+            writer.start()
         }
 
         let deadline = Date().addingTimeInterval(240)
@@ -115,6 +185,7 @@ struct HermesInterpreter: Interpreter {
             }
             Thread.sleep(forTimeInterval: 0.08)
         }
+        inputWriter?.wait()
         try? output.synchronize(); try? error.synchronize()
         let response = (try? String(contentsOf: outputURL, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

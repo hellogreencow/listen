@@ -8,16 +8,19 @@ running competing recorders.
 
 - **Dictation:** hold the configured key (Right Option by default), speak, and
   release. Listen transcribes, optionally cleans, and delivers text through the
-  proven paste path. A new dictation always supersedes stale provider work.
+  proven paste path. A new dictation always supersedes stale provider work;
+  hold capture hard-stops at 180 seconds if macOS loses the key-release event.
 - **Quick Thought:** hold **Left Command + Option**, speak, and release. Listen
   gives a short visible/spoken reflection in the migrated xAI custom voice and
   appends both sides to the notes ledger. Its compact, non-activating card can
-  be dismissed with a trackpad swipe, click-drag swipe, or close button.
+  be dismissed with a trackpad swipe, click-drag swipe, or close button. This
+  hold capture has the same 180-second safety cap as Dictation.
 - **Wake word:** opt in from Preferences → Voice, then say the configured name.
   Apple streaming recognition handles wake and follow-up turns; recognition is
   rearmed before TTS so speech can interrupt the answer.
-- **Conversation recording:** use the menubar or Preferences → Voice. Capture is
-  unbounded and rolls AAC parts directly to disk. Stop produces diarized
+- **Conversation recording:** use the menubar or Preferences → Voice. Rolling
+  conversation capture is unbounded and writes AAC parts directly to disk;
+  unlike the two hold modes, it has no 180-second cap. Stop produces diarized
   transcripts, chapter analyses, a mind map, actions/decisions, expandable
   source exchanges, and on-demand deep-analysis links.
 
@@ -80,8 +83,10 @@ period. No always-on daemon is required.
 
 Dictation remains the priority path. Every hold capture receives a unique
 microphone lease, so rapidly pressing the hotkey again cannot be interrupted by
-an older recording that is still finalizing. Provider work is session-scoped
-and timed out; superseded work cannot paste text or overwrite the menubar state.
+an older recording that is still finalizing. Each STT attempt has a 30-second
+deadline and cleanup has a 10-second deadline. Cleanup failure or timeout pastes
+the raw transcript rather than losing the dictation. Provider work is
+session-scoped; superseded work cannot paste text or overwrite the menubar state.
 
 The shared engine keeps at most 30 seconds of pre-roll in a fixed circular
 buffer. Once full, new tap buffers overwrite the oldest samples without shifting
@@ -117,19 +122,41 @@ interruptible system speech remains the automatic offline/error fallback.
 Conversation reports can optionally use Hermes for deeper analysis. Listen
 invokes the documented `hermes --oneshot` CLI with an empty toolset; it does not
 import Hermes's private Python packages or assume a checkout under `~/.hermes`.
-Integrators that need stdin for very large reports can provide a versioned
-`listen-hermes-adapter-v1` executable (or set `LISTEN_HERMES_ADAPTER_V1`); the
-adapter receives the prompt on stdin and returns only the analysis on stdout.
+Prompts above 64 KiB are never placed in process arguments: they require the
+versioned `listen-hermes-adapter-v1` executable (or
+`LISTEN_HERMES_ADAPTER_V1`). The adapter receives the prompt asynchronously on
+stdin and returns only the analysis on stdout, so cancellation and the
+four-minute deadline remain effective even if an adapter stops reading.
 
 ## Build
 
 The production app is native Swift and is built, bundled, and signed with the
-stable local certificate requirement documented in [AGENTS.md](AGENTS.md):
+stable local certificate requirement documented in [AGENTS.md](AGENTS.md).
+Release gates intentionally run against the candidate bundle before it can
+replace the installed application:
 
 ```bash
-cd ListenMac
-./build.sh
-/usr/bin/ditto build/Listen.app /Applications/Listen.app
+ListenMac/build.sh
+ListenMac/Tests/run-stress-tests.sh
+git diff --check
+plutil -lint ListenMac/Info.plist
+codesign --verify --deep --strict ListenMac/build/Listen.app
+codesign -d -r- ListenMac/build/Listen.app 2>&1 \
+  | rg -F 'certificate leaf[subject.CN] = "Listen Local Signing"'
+
+# Exercise the signed candidate and prove its microphone lease tears down.
+osascript -e 'tell application "Listen" to quit' 2>/dev/null || true
+before=$(wc -c < /tmp/listen.err.log 2>/dev/null || echo 0)
+open ListenMac/build/Listen.app
+sleep 1
+open -a ListenMac/build/Listen.app -u 'https://listen.local/test/microphone'
+sleep 8
+runtime_log=$(tail -c "+$((before + 1))" /tmp/listen.err.log)
+printf '%s\n' "$runtime_log" | rg 'mic opened'
+printf '%s\n' "$runtime_log" | rg 'mic closed'
+osascript -e 'tell application "Listen" to quit'
+
+/usr/bin/ditto ListenMac/build/Listen.app /Applications/Listen.app
 open /Applications/Listen.app
 ```
 
@@ -166,6 +193,10 @@ graph/RAG recovery across 1,200 notes, verifies circular pre-roll and week-scale
 rolling progression, simulates a 24-part long session, races concurrent report
 analyses, validates every report artifact, rejects transcript HTML injection,
 and verifies the report contains no remote asset URL.
+
+For a release, the complete order is build → isolated stress/whitespace/plist/
+signature gates → signed-candidate microphone teardown → installation → launch.
+Do not move `ditto` or the final launch ahead of those checks.
 
 Runtime state transitions are written privately to `/tmp/listen.err.log`; paste
 delivery diagnostics remain in `/tmp/listen-paste.log`.

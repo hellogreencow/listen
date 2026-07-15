@@ -627,7 +627,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             var text = raw
             if mode == .dictation, let interpreter, !raw.isEmpty {
                 do {
-                    let cleaned = try await withTimeout(5) {
+                    let cleaned = try await withTimeout(10) {
                         try await interpreter.interpret(raw, prompt: self.settings.cleanup_prompt)
                     }
                     text = cleaned.isEmpty ? raw : cleaned

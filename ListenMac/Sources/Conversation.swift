@@ -208,6 +208,17 @@ struct ConversationReport: Codable, Identifiable, Sendable {
 }
 
 enum ConversationProcessor {
+    /// A small fan-out materially shortens multi-hour report generation while
+    /// avoiding a burst of one provider request per rolling audio part.
+    static let maximumConcurrentTranscriptions = 3
+
+    private struct ChunkTranscription: Sendable {
+        var index: Int
+        var duration: Double
+        var transcript: DetailedTranscript?
+        var failure: String?
+    }
+
     /// Provider calls may run concurrently, but report.json is one local
     /// document. Merge each completed result under a short synchronous lock
     /// so analyses and focus refreshes cannot overwrite one another with a
@@ -225,11 +236,13 @@ enum ConversationProcessor {
         var diarizationNotes: [String] = []
         var errors: [String] = []
 
-        for (index, chunk) in draft.chunks.enumerated() {
-            progress("transcribing \(index + 1)/\(draft.chunks.count)")
-            let duration = audioDuration(chunk)
-            do {
-                var detailed = try await withTimeout(180) { try await stt.transcribeDetailed(chunk) }
+        let transcriptions = try await transcribeChunks(
+            draft.chunks, stt: stt, progress: progress
+        )
+        for transcription in transcriptions {
+            let index = transcription.index
+            let duration = transcription.duration
+            if var detailed = transcription.transcript {
                 for i in detailed.segments.indices {
                     detailed.segments[i].chunk = index
                     detailed.segments[i].start += offset
@@ -244,8 +257,9 @@ enum ConversationProcessor {
                 }
                 allSegments.append(contentsOf: detailed.segments)
                 if !diarizationNotes.contains(detailed.diarization) { diarizationNotes.append(detailed.diarization) }
-            } catch {
-                let message = "Chunk \(index + 1) transcription failed: \(error.localizedDescription)"
+            } else {
+                let message = transcription.failure
+                    ?? "Chunk \(index + 1) transcription failed with no provider error."
                 errors.append(message)
                 allSegments.append(TranscriptSegment(chunk: index, start: offset, end: offset + duration,
                                                      speaker: "System", text: "[\(message)]"))
@@ -352,6 +366,78 @@ enum ConversationProcessor {
         try enc.encode(manifest).write(to: draft.directory.appendingPathComponent("manifest.json"), options: .atomic)
         hardenFiles(in: draft.directory)
         return reportURL
+    }
+
+    /// Sliding-window task submission keeps at most the configured number of
+    /// provider calls active and returns results in original audio-part order.
+    private static func transcribeChunks(
+        _ chunks: [URL],
+        stt: STTProvider,
+        progress: @escaping @Sendable (String) -> Void
+    ) async throws -> [ChunkTranscription] {
+        guard !chunks.isEmpty else { return [] }
+        return try await withThrowingTaskGroup(
+            of: ChunkTranscription.self,
+            returning: [ChunkTranscription].self
+        ) { group in
+            var nextIndex = 0
+            var completed: [ChunkTranscription] = []
+
+            let initialCount = min(maximumConcurrentTranscriptions, chunks.count)
+            for index in 0..<initialCount {
+                let chunk = chunks[index]
+                group.addTask {
+                    try await transcribeChunk(
+                        chunk, index: index, total: chunks.count,
+                        stt: stt, progress: progress
+                    )
+                }
+            }
+            nextIndex = initialCount
+
+            while let result = try await group.next() {
+                completed.append(result)
+                if nextIndex < chunks.count {
+                    let index = nextIndex
+                    let chunk = chunks[index]
+                    nextIndex += 1
+                    group.addTask {
+                        try await transcribeChunk(
+                            chunk, index: index, total: chunks.count,
+                            stt: stt, progress: progress
+                        )
+                    }
+                }
+            }
+            return completed.sorted { $0.index < $1.index }
+        }
+    }
+
+    private static func transcribeChunk(
+        _ chunk: URL,
+        index: Int,
+        total: Int,
+        stt: STTProvider,
+        progress: @escaping @Sendable (String) -> Void
+    ) async throws -> ChunkTranscription {
+        progress("transcribing \(index + 1)/\(total)")
+        let duration = audioDuration(chunk)
+        do {
+            let transcript = try await withTimeout(180) {
+                try await stt.transcribeDetailed(chunk)
+            }
+            return ChunkTranscription(
+                index: index, duration: duration,
+                transcript: transcript, failure: nil
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return ChunkTranscription(
+                index: index, duration: duration, transcript: nil,
+                failure: "Chunk \(index + 1) transcription failed: \(error.localizedDescription)"
+            )
+        }
     }
 
     static func analyze(

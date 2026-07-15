@@ -17,6 +17,7 @@ swiftc -O -swift-version 6 -warnings-as-errors -target arm64-apple-macos13.0 -sd
   ListenMac/Sources/Providers.swift \
   ListenMac/Sources/StatusAppearance.swift \
   ListenMac/Sources/Settings.swift \
+  ListenMac/Sources/HermesAnalysis.swift \
   ListenMac/Sources/Conversation.swift \
   ListenMac/Tests/StressHarness.swift \
   -o "$OUT"

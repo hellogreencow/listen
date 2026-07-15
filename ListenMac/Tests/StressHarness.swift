@@ -16,6 +16,8 @@ private func require(_ condition: @autoclosure () -> Bool, _ message: String) th
 private final class MockSTT: STTProvider, @unchecked Sendable {
     private let lock = NSLock()
     private var counter = 0
+    private var activeRequests = 0
+    private var peakRequests = 0
 
     private func nextCounter() -> Int {
         lock.lock(); defer { lock.unlock() }
@@ -23,10 +25,32 @@ private final class MockSTT: STTProvider, @unchecked Sendable {
         return counter
     }
 
+    private func beginRequest() {
+        lock.lock(); defer { lock.unlock() }
+        activeRequests += 1
+        peakRequests = max(peakRequests, activeRequests)
+    }
+
+    private func endRequest() {
+        lock.lock(); defer { lock.unlock() }
+        activeRequests -= 1
+    }
+
+    var peakConcurrentRequests: Int {
+        lock.lock(); defer { lock.unlock() }
+        return peakRequests
+    }
+
     func transcribe(_ url: URL) async throws -> String { "mock transcript" }
 
     func transcribeDetailed(_ url: URL) async throws -> DetailedTranscript {
-        let n = nextCounter()
+        let stem = url.deletingPathExtension().lastPathComponent
+        let n = Int(stem.split(separator: "-").last ?? "") ?? nextCounter()
+        beginRequest()
+        defer { endRequest() }
+        // Finish rolling parts out of order so the report test proves that
+        // bounded parallel provider work is merged in original audio order.
+        try await Task.sleep(nanoseconds: UInt64((25 - min(n, 24)) % 4 + 1) * 4_000_000)
         return DetailedTranscript(segments: [
             TranscriptSegment(start: 0, end: 180, speaker: "Speaker 1",
                               text: "Opening <script>alert('no')</script> thought from part \(n)."),
@@ -88,6 +112,7 @@ enum StressHarness {
         try testSpeechEchoGate()
         try testElevenLabsTokenSpacing()
         try testXAITTSRequest()
+        try testHermesPromptTransport()
         try testRollingAudioPolicy()
         try testCircularSampleBuffer()
         try testConcurrentM4AWriter(root)
@@ -103,6 +128,7 @@ enum StressHarness {
         print("PASS: assistant echo suppression with genuine barge-in preservation")
         print("PASS: ElevenLabs explicit token spacing across scripts")
         print("PASS: xAI custom-voice request parity with retired daemon")
+        print("PASS: Hermes large prompts stay off process arguments")
         print("PASS: rolling audio chunk boundaries and unbounded frame progression")
         print("PASS: fixed-capacity real-time microphone ring buffer")
         print("PASS: concurrent off-tap AAC writer")
@@ -126,6 +152,14 @@ enum StressHarness {
         try require(decoded.menubar_color_style == "rainbow", "horizontal rainbow must be the default")
         try require(decoded.menubar_text_padding == 2, "compact menu-bar text default changed")
         try require(decoded.menubar_text_size == 14, "idle menu-bar text size default changed")
+    }
+
+    private static func testHermesPromptTransport() throws {
+        try require(HermesInterpreter.cliPromptFits("short analysis"),
+                    "normal Hermes prompt no longer uses the supported one-shot CLI")
+        let oversized = String(repeating: "private conversation ", count: 4_000)
+        try require(!HermesInterpreter.cliPromptFits(oversized),
+                    "oversized Hermes prompt would leak into argv or exceed its safe bound")
     }
 
     private static func testStatusAppearance() throws {
@@ -480,8 +514,9 @@ enum StressHarness {
                                       endedAt: Date(timeIntervalSince1970: 1_700_014_400),
                                       chunks: chunks)
         let progressEvents = ProgressBox()
+        let mockSTT = MockSTT()
         let reportURL = try await ConversationProcessor.process(
-            draft, stt: MockSTT(), assistant: MockAssistant()
+            draft, stt: mockSTT, assistant: MockAssistant()
         ) { message in
             progressEvents.append(message)
         }
@@ -504,6 +539,14 @@ enum StressHarness {
         let reportData = try Data(contentsOf: dir.appendingPathComponent("report.json"))
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
         let report = try decoder.decode(ConversationReport.self, from: reportData)
+        try require(mockSTT.peakConcurrentRequests > 1,
+                    "rolling conversation chunks were still transcribed sequentially")
+        try require(mockSTT.peakConcurrentRequests <= ConversationProcessor.maximumConcurrentTranscriptions,
+                    "rolling transcription exceeded its bounded provider fan-out")
+        let transcriptParts = report.chapters.flatMap(\.segments).map(\.text)
+        try require(transcriptParts.first?.contains("part 1") == true
+                    && transcriptParts.last?.contains("part 24") == true,
+                    "parallel transcription results were not merged in audio-part order")
         try require(report.focus?.takeaways.count == 2, "focused takeaway layer was not persisted")
         try require(report.focus?.nextMoves.first?.contains("Speaker 2") == true,
                     "focused next move lost its supported owner")
