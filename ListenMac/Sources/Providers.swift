@@ -94,6 +94,16 @@ private func multipart(boundary: String, fields: [String: String], file: (name: 
 
 // MARK: - ElevenLabs
 
+enum ElevenLabsTokenAssembler {
+    static func append(_ token: String, type: String, to text: inout String) {
+        if type == "spacing" {
+            if !text.isEmpty { text += token }
+        } else if type == "word" {
+            text += token
+        }
+    }
+}
+
 struct ElevenLabsSTT: STTProvider {
     let apiKey: String
     let model: String
@@ -164,7 +174,7 @@ struct ElevenLabsSTT: STTProvider {
             guard type == "word" || type == "spacing" else { continue }
             let token = word["text"] as? String ?? ""
             if type == "spacing" {
-                if !currentText.isEmpty { currentText += token }
+                ElevenLabsTokenAssembler.append(token, type: type, to: &currentText)
                 continue
             }
             let rawSpeaker: String
@@ -177,8 +187,9 @@ struct ElevenLabsSTT: STTProvider {
             if !currentText.isEmpty && speaker != currentSpeaker { flush() }
             if currentText.isEmpty { currentStart = start; currentSpeaker = speaker }
             currentEnd = max(currentEnd, end)
-            if currentText.isEmpty || currentText.last?.isWhitespace == true { currentText += token }
-            else { currentText += " " + token }
+            // Scribe emits explicit `spacing` tokens. Adding an implicit
+            // separator corrupts scripts such as Japanese and Mandarin.
+            ElevenLabsTokenAssembler.append(token, type: type, to: &currentText)
         }
         flush()
         if segments.isEmpty {

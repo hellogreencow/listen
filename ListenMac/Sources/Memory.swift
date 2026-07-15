@@ -35,8 +35,10 @@ struct RetrievedMemory: Sendable {
         guard !notes.isEmpty else { return "" }
         let formatter = ISO8601DateFormatter()
         var remaining = max(0, maxCharacters)
-        var blocks: [String] = []
-        for note in notes.sorted(by: { $0.createdAt < $1.createdAt }) {
+        var newestFirst: [String] = []
+        // Spend the bounded prompt budget on the newest context first, then
+        // restore chronological presentation for the model.
+        for note in notes.sorted(by: { $0.createdAt > $1.createdAt }) {
             let header = "[\(note.kind.rawValue) · \(formatter.string(from: note.createdAt))]"
             var body = "User: \(Self.safeReferenceText(note.thought))"
             let response = Self.safeReferenceText(note.response)
@@ -45,11 +47,11 @@ struct RetrievedMemory: Sendable {
             if block.count > 1_400 { block = String(block.prefix(1_397)) + "…" }
             guard remaining > 0 else { break }
             if block.count > remaining { block = String(block.prefix(remaining)) }
-            blocks.append(block)
-            remaining -= block.count + 2
+            newestFirst.append(block)
+            remaining = max(0, remaining - block.count - 2)
         }
-        guard !blocks.isEmpty else { return "" }
-        var result = blocks.joined(separator: "\n\n")
+        guard !newestFirst.isEmpty else { return "" }
+        var result = newestFirst.reversed().joined(separator: "\n\n")
         if !associations.isEmpty, remaining > 80 {
             let graphLine = "\n\nLocal graph associations: " + associations.joined(separator: ", ")
             result += String(graphLine.prefix(remaining))
@@ -280,22 +282,32 @@ final class NoteStore: @unchecked Sendable {
     private var ledgerURL: URL { storageDirectory.appendingPathComponent("notes.jsonl") }
     private var graphURL: URL { storageDirectory.appendingPathComponent("knowledge-graph.json") }
 
-    func append(_ note: VoiceNote) {
-        queue.async { [self] in
+    func append(_ note: VoiceNote) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            queue.async { [self] in
             do {
                 var memory = try ensureCache()
                 var line = try encoder.encode(note)
                 line.append(0x0A)
                 if !FileManager.default.fileExists(atPath: ledgerURL.path) {
-                    FileManager.default.createFile(atPath: ledgerURL.path, contents: nil,
-                                                   attributes: [.posixPermissions: 0o600])
+                    guard FileManager.default.createFile(
+                        atPath: ledgerURL.path, contents: nil,
+                        attributes: [.posixPermissions: 0o600]
+                    ) else {
+                        throw CocoaError(.fileWriteUnknown)
+                    }
                 }
                 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: ledgerURL.path)
                 let handle = try FileHandle(forWritingTo: ledgerURL)
-                try handle.seekToEnd()
-                try handle.write(contentsOf: line)
-                try handle.synchronize()
-                try handle.close()
+                do {
+                    try handle.seekToEnd()
+                    try handle.write(contentsOf: line)
+                    try handle.synchronize()
+                    try handle.close()
+                } catch {
+                    try? handle.close()
+                    throw error
+                }
 
                 integrate(note, into: &memory)
                 cache = memory
@@ -305,9 +317,12 @@ final class NoteStore: @unchecked Sendable {
                 DispatchQueue.main.async {
                     NotificationCenter.default.post(name: Self.didChange, object: nil)
                 }
+                continuation.resume()
             } catch {
                 listenLog("note append failed error=\(error.localizedDescription)")
                 NSLog("[Listen] note append failed: \(error.localizedDescription)")
+                continuation.resume(throwing: error)
+            }
             }
         }
     }
@@ -333,6 +348,22 @@ final class NoteStore: @unchecked Sendable {
             }
             return MemoryGraphStats(notes: memory.notes.count, concepts: memory.graph.nodes.count,
                                     relationships: memory.graph.edges.count)
+        }
+    }
+
+    func snapshot() -> (notes: [VoiceNote], stats: MemoryGraphStats) {
+        queue.sync {
+            guard let memory = try? ensureCache() else {
+                return ([], MemoryGraphStats(notes: 0, concepts: 0, relationships: 0))
+            }
+            return (
+                memory.notes,
+                MemoryGraphStats(
+                    notes: memory.notes.count,
+                    concepts: memory.graph.nodes.count,
+                    relationships: memory.graph.edges.count
+                )
+            )
         }
     }
 

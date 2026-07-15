@@ -34,9 +34,11 @@ enum StatusAppearance {
     static let defaultSpeed = 1.0
     static let defaultIntensity = 0.92
     static let defaultTextPadding = 2.0
+    static let defaultIdleTextSize = 14.0
 
     static let speedRange = 0.25...2.0
     static let intensityRange = 0.45...1.0
+    static let idleTextSizeRange = 12.0...15.0
     /// Zero is safe because itemLength still reserves the complete measured
     /// width of "listening"; this only removes otherwise-empty outer space.
     static let textPaddingRange = 0.0...18.0
@@ -57,9 +59,23 @@ enum StatusAppearance {
         CGFloat(min(max(value, textPaddingRange.lowerBound), textPaddingRange.upperBound))
     }
 
-    static func itemLength(font: NSFont, padding: Double) -> CGFloat {
-        let textWidth = ("listening" as NSString).size(withAttributes: [.font: font]).width
-        return ceil(textWidth) + textPadding(padding)
+    static func idleTextSize(_ value: Double) -> CGFloat {
+        CGFloat(min(max(value, idleTextSizeRange.lowerBound), idleTextSizeRange.upperBound))
+    }
+
+    static func itemLength(
+        idleText: String,
+        idleFont: NSFont,
+        activeText: String,
+        activeFont: NSFont,
+        padding: Double
+    ) -> CGFloat {
+        let attributes: (NSFont) -> [NSAttributedString.Key: Any] = {
+            [.font: $0, .kern: 0.05]
+        }
+        let idleWidth = (idleText as NSString).size(withAttributes: attributes(idleFont)).width
+        let activeWidth = (activeText as NSString).size(withAttributes: attributes(activeFont)).width
+        return ceil(max(idleWidth, activeWidth)) + textPadding(padding)
     }
 
     /// One complete palette pass takes about seven seconds at normal speed.

@@ -1,4 +1,5 @@
 import AVFoundation
+import AppKit
 import Foundation
 
 private enum TestFailure: Error, CustomStringConvertible {
@@ -62,6 +63,16 @@ private struct MockAssistant: Interpreter {
     }
 }
 
+private struct DelayedAnalysisAssistant: Interpreter {
+    let response: String
+    let delayNanoseconds: UInt64
+
+    func interpret(_ text: String, prompt: String) async throws -> String {
+        try await Task.sleep(nanoseconds: delayNanoseconds)
+        return response
+    }
+}
+
 @main
 enum StressHarness {
     static func main() async throws {
@@ -73,21 +84,31 @@ enum StressHarness {
         try testSettingsCompatibility(root)
         try testStatusAppearance()
         try testWakePhraseMatcher()
+        try testSideSpecificCommandState()
         try testSpeechEchoGate()
+        try testElevenLabsTokenSpacing()
         try testXAITTSRequest()
         try testRollingAudioPolicy()
+        try testCircularSampleBuffer()
         try testConcurrentM4AWriter(root)
-        try testLocalMemoryGraph(root)
+        try testRecoverableConversationDraft(root)
+        try await testLocalMemoryGraph(root)
+        try await testMemoryPersistenceFailure(root)
         try testMemoryScaleAndRecovery(root)
         try await testLongReportPipeline(root)
         print("PASS: settings compatibility")
         print("PASS: horizontal menu-bar color palettes and bounded customization")
         print("PASS: wake phrase boundaries and inline-command recovery")
+        print("PASS: side-specific Quick Thought command state")
         print("PASS: assistant echo suppression with genuine barge-in preservation")
+        print("PASS: ElevenLabs explicit token spacing across scripts")
         print("PASS: xAI custom-voice request parity with retired daemon")
         print("PASS: rolling audio chunk boundaries and unbounded frame progression")
+        print("PASS: fixed-capacity real-time microphone ring buffer")
         print("PASS: concurrent off-tap AAC writer")
+        print("PASS: quit-finalized conversation recovery into native reports")
         print("PASS: local notes knowledge graph, reply continuity, and persisted RAG retrieval")
+        print("PASS: local-note persistence failures propagate to capture callers")
         print("PASS: 1,200-note retrieval scale, context bounds, and corrupt-index recovery")
         print("PASS: 24-part conversation transcript/report/deep-analysis pipeline")
         print("PASS: report HTML escaping and local-only asset references")
@@ -104,6 +125,7 @@ enum StressHarness {
         try require(decoded.conversation_chunk_minutes >= 2, "invalid rolling chunk default")
         try require(decoded.menubar_color_style == "rainbow", "horizontal rainbow must be the default")
         try require(decoded.menubar_text_padding == 2, "compact menu-bar text default changed")
+        try require(decoded.menubar_text_size == 14, "idle menu-bar text size default changed")
     }
 
     private static func testStatusAppearance() throws {
@@ -115,6 +137,24 @@ enum StressHarness {
                     "animation speed was not upper-bounded")
         try require(StatusAppearance.textPadding(-10) == CGFloat(StatusAppearance.textPaddingRange.lowerBound),
                     "text padding was not lower-bounded")
+        try require(StatusAppearance.idleTextSize(1) == CGFloat(StatusAppearance.idleTextSizeRange.lowerBound),
+                    "idle text size was not lower-bounded")
+        try require(StatusAppearance.idleTextSize(100) == CGFloat(StatusAppearance.idleTextSizeRange.upperBound),
+                    "idle text size was not upper-bounded")
+
+        let idleFont = NSFont.systemFont(ofSize: StatusAppearance.defaultIdleTextSize, weight: .medium)
+        let activeFont = NSFont.systemFont(ofSize: 12)
+        let idleWidth = ("Listen" as NSString).size(withAttributes: [.font: idleFont, .kern: 0.05]).width
+        let activeWidth = ("listening" as NSString).size(withAttributes: [.font: activeFont, .kern: 0.05]).width
+        let fixedWidth = StatusAppearance.itemLength(
+            idleText: "Listen",
+            idleFont: idleFont,
+            activeText: "listening",
+            activeFont: activeFont,
+            padding: 0
+        )
+        try require(fixedWidth == ceil(max(idleWidth, activeWidth)),
+                    "fixed menu-bar width did not reserve both status labels")
 
         let left = StatusAppearance.color(style: .rainbow, position: 0, phase: 0, intensity: 1)
             .usingColorSpace(.deviceRGB)
@@ -145,11 +185,26 @@ enum StressHarness {
                     "embedded word falsely matched wake phrase")
     }
 
+    private static func testSideSpecificCommandState() throws {
+        let genericAndRight = NSEvent.ModifierFlags(
+            rawValue: NSEvent.ModifierFlags.command.rawValue | 0x0000_0010
+        )
+        let genericAndLeft = NSEvent.ModifierFlags(
+            rawValue: NSEvent.ModifierFlags.command.rawValue | Hotkey.leftCommandDeviceMask
+        )
+        try require(!Hotkey.isLeftCommandDown(in: genericAndRight),
+                    "Right Command incorrectly armed Quick Thought")
+        try require(Hotkey.isLeftCommandDown(in: genericAndLeft),
+                    "Left Command device state was not detected")
+    }
+
     private static func testSpeechEchoGate() throws {
         let gate = SpeechEchoGate()
         gate.begin("A useful principle is to design for failures first, then make recovery observable.")
         try require(gate.filtered("useful principle is to design for failures") == nil,
                     "assistant speech was not suppressed")
+        try require(gate.filtered("uh useful principle is to design for failures") == nil,
+                    "a filler prefix allowed assistant echo through")
         try require(gate.filtered("useful principle is wait stop") == "wait stop",
                     "a trailing user interruption was lost with the echo")
         try require(gate.filtered("stop") == "stop",
@@ -159,6 +214,20 @@ enum StressHarness {
         gate.end(settleTime: 0)
         try require(gate.filtered("useful principle") == "useful principle",
                     "the echo gate remained active after its settle window")
+    }
+
+    private static func testElevenLabsTokenSpacing() throws {
+        var english = ""
+        ElevenLabsTokenAssembler.append("Hello", type: "word", to: &english)
+        ElevenLabsTokenAssembler.append(" ", type: "spacing", to: &english)
+        ElevenLabsTokenAssembler.append("world", type: "word", to: &english)
+        try require(english == "Hello world", "explicit English spacing was not preserved")
+
+        var japanese = ""
+        ElevenLabsTokenAssembler.append("今日", type: "word", to: &japanese)
+        ElevenLabsTokenAssembler.append("は", type: "word", to: &japanese)
+        ElevenLabsTokenAssembler.append("晴れ", type: "word", to: &japanese)
+        try require(japanese == "今日は晴れ", "implicit spaces corrupted a no-space script")
     }
 
     private static func testXAITTSRequest() throws {
@@ -202,6 +271,28 @@ enum StressHarness {
         try require(weekOfFrames > limit && RollingAudioPolicy.shouldRoll(
             hasWriter: true, framesInChunk: weekOfFrames, rate: rate, chunkSeconds: seconds
         ), "long-duration frame progression did not remain rollable")
+        try require(RollingAudioPolicy.shouldRoll(
+            hasWriter: true, framesInChunk: 1, rate: 24_000,
+            chunkSeconds: seconds, writerRate: 48_000
+        ), "a route sample-rate change did not rotate the conversation file")
+    }
+
+    private static func testCircularSampleBuffer() throws {
+        var small = CircularSampleBuffer(capacity: 8)
+        small.append([1, 2, 3, 4, 5, 6])
+        small.append([7, 8, 9, 10])
+        try require(small.suffix(8) == [3, 4, 5, 6, 7, 8, 9, 10],
+                    "circular pre-roll lost logical sample order")
+        try require(abs(small.rms(last: 2) - sqrt((81 + 100) / 2)) < 0.001,
+                    "circular pre-roll RMS used the wrong tail")
+
+        var stress = CircularSampleBuffer(capacity: 1_440_000)
+        let chunk = [Float](repeating: 0.125, count: 4_096)
+        let started = Date()
+        for _ in 0..<1_000 { stress.append(chunk) }
+        try require(stress.count == stress.capacity, "long-lived ring did not remain capacity-bounded")
+        try require(Date().timeIntervalSince(started) < 2,
+                    "full ring append path regressed toward whole-buffer shifting")
     }
 
     private static func testConcurrentM4AWriter(_ root: URL) throws {
@@ -221,9 +312,44 @@ enum StressHarness {
         let audio = try AVAudioFile(forReading: url)
         try require(audio.length > 100_000, "AAC writer dropped too many queued frames (\(audio.length))")
         try require((try? Data(contentsOf: url).count) ?? 0 > 1_000, "AAC output is empty")
+
+        let mixedURL = root.appendingPathComponent("writer-rate-change.m4a")
+        let mixed = M4AStreamWriter(url: mixedURL)
+        mixed.append(samples: [Float](repeating: 0.02, count: 4_800), rate: 48_000)
+        mixed.append(samples: [Float](repeating: 0.02, count: 2_400), rate: 24_000)
+        mixed.close()
+        let mixedAudio = try AVAudioFile(forReading: mixedURL)
+        let duration = Double(mixedAudio.length) / mixedAudio.fileFormat.sampleRate
+        try require(duration > 0.17 && duration < 0.24,
+                    "sample-rate transition changed recording duration (\(duration)s)")
     }
 
-    private static func testLocalMemoryGraph(_ root: URL) throws {
+    private static func testRecoverableConversationDraft(_ root: URL) throws {
+        let recoveryRoot = root.appendingPathComponent("recovery-root", isDirectory: true)
+        let session = recoveryRoot.appendingPathComponent("saved-session", isDirectory: true)
+        let audioDirectory = session.appendingPathComponent("audio", isDirectory: true)
+        try FileManager.default.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
+        let audio = audioDirectory.appendingPathComponent("audio-0001.m4a")
+        try AudioEncode.writeM4A(samples: [Float](repeating: 0.01, count: 4_800), rate: 48_000, to: audio)
+        let formatter = ISO8601DateFormatter()
+        let manifest: [String: Any] = [
+            "id": "saved-session",
+            "startedAt": formatter.string(from: Date(timeIntervalSince1970: 1_700_000_000)),
+            "endedAt": formatter.string(from: Date(timeIntervalSince1970: 1_700_000_100)),
+            "state": "saved",
+            "chunks": [audio.lastPathComponent],
+        ]
+        try JSONSerialization.data(withJSONObject: manifest).write(
+            to: session.appendingPathComponent("manifest.json"), options: .atomic
+        )
+        let drafts = ConversationProcessor.recoverableDrafts(root: recoveryRoot)
+        try require(drafts.count == 1 && drafts[0].id == "saved-session",
+                    "quit-finalized session was not recoverable")
+        try require(drafts[0].chunks.map(\.standardizedFileURL.path) == [audio.standardizedFileURL.path],
+                    "recovery lost the finalized audio chunk")
+    }
+
+    private static func testLocalMemoryGraph(_ root: URL) async throws {
         let directory = root.appendingPathComponent("memory-continuity", isDirectory: true)
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let first = VoiceNote(
@@ -237,8 +363,8 @@ enum StressHarness {
             response: "Twelve is small enough for depth while still exposing repeated patterns."
         )
         let store = NoteStore(directory: directory)
-        store.append(first)
-        store.append(second)
+        try await store.append(first)
+        try await store.append(second)
         store.flush()
 
         let followUp = store.retrieve(for: "Why do you think that would work?", now: now)
@@ -267,6 +393,33 @@ enum StressHarness {
         let afterRestart = restarted.retrieve(for: "What about that cohort?", now: now.addingTimeInterval(120))
         try require(afterRestart.notes.map(\.id).contains(first.id),
                     "conversation memory did not survive a process restart")
+
+        let longOld = VoiceNote(
+            createdAt: now.addingTimeInterval(-300), kind: .quickThought,
+            thought: String(repeating: "old context ", count: 180), response: ""
+        )
+        let newest = VoiceNote(
+            createdAt: now, kind: .quickThought,
+            thought: "NEWEST_CONTEXT_MUST_SURVIVE", response: ""
+        )
+        let bounded = RetrievedMemory(notes: [longOld, newest], concepts: [], associations: [])
+            .promptBlock(maxCharacters: 300)
+        try require(bounded.contains("NEWEST_CONTEXT_MUST_SURVIVE"),
+                    "prompt budget discarded the newest conversational context")
+    }
+
+    private static func testMemoryPersistenceFailure(_ root: URL) async throws {
+        let blocked = root.appendingPathComponent("not-a-directory")
+        try Data("occupied".utf8).write(to: blocked)
+        let store = NoteStore(directory: blocked)
+        do {
+            try await store.append(VoiceNote(kind: .quickThought, thought: "must fail", response: ""))
+            throw TestFailure.failed("ledger persistence failure was reported as success")
+        } catch is TestFailure {
+            throw TestFailure.failed("ledger persistence failure was reported as success")
+        } catch {
+            // Expected: the append result now reaches its capture caller.
+        }
     }
 
     private static func testMemoryScaleAndRecovery(_ root: URL) throws {
@@ -381,6 +534,25 @@ enum StressHarness {
         )
         try require(withHermes.analyses["hermes:chapter-1"]?.contains("DEEP ANALYSIS") == true,
                     "provider-scoped Hermes analysis was not persisted")
+
+        async let slowAnalysis = ConversationProcessor.analyze(
+            directory: dir, scope: "all",
+            assistant: DelayedAnalysisAssistant(response: "SLOW_ANALYSIS", delayNanoseconds: 180_000_000),
+            storageKey: "race:slow"
+        )
+        async let fastAnalysis = ConversationProcessor.analyze(
+            directory: dir, scope: "chapter-1",
+            assistant: DelayedAnalysisAssistant(response: "FAST_ANALYSIS", delayNanoseconds: 10_000_000),
+            storageKey: "race:fast"
+        )
+        _ = try await (slowAnalysis, fastAnalysis)
+        let afterConcurrentAnalysis = try decoder.decode(
+            ConversationReport.self,
+            from: Data(contentsOf: dir.appendingPathComponent("report.json"))
+        )
+        try require(afterConcurrentAnalysis.analyses["race:slow"] == "SLOW_ANALYSIS"
+                    && afterConcurrentAnalysis.analyses["race:fast"] == "FAST_ANALYSIS",
+                    "concurrent report analyses overwrote one another")
 
         let refreshed = try await ConversationProcessor.refreshFocus(
             directory: dir, assistant: MockAssistant()

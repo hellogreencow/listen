@@ -41,6 +41,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var processTask: Task<Void, Never>?
     /// Wake assistant work is independent so dictation can always cancel it.
     private var assistantTask: Task<Void, Never>?
+    private var terminationTask: Task<Void, Never>?
+    private var reportRecoveryTask: Task<Void, Never>?
     private var activeReportProcesses = 0
     private var session = 0
     private var voiceSession = 0
@@ -49,15 +51,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private static let maxRecordingSeconds: Double = 180
     private static let minRecordingSeconds: Double = 0.3
-    /// A compact menu-bar font preserves the full word while reclaiming enough
-    /// horizontal space for macOS's microphone privacy item on notched screens.
-    /// The fixed slot remains the same width at idle, so recording never asks
-    /// AppKit to expand the item at the exact moment the privacy item arrives.
-    private static let statusFont: NSFont = {
+    /// The active word stays compact enough to survive macOS's microphone
+    /// privacy item on notched screens. Idle "Listen" is deliberately larger
+    /// so it fills that same fixed slot instead of looking over-padded.
+    private static let activeStatusFont: NSFont = {
         let base = NSFont.menuBarFont(ofSize: 12)
         let descriptor = base.fontDescriptor.withSymbolicTraits(.condensed)
         return NSFont(descriptor: descriptor, size: base.pointSize) ?? base
     }()
+    private var idleStatusFont: NSFont {
+        NSFont.systemFont(
+            ofSize: StatusAppearance.idleTextSize(settings.menubar_text_size),
+            weight: .medium
+        )
+    }
     /// A stable autosave identity lets AppKit preserve the user's Cmd-dragged
     /// order. On first launch, ordinal position zero anchors Listen beside the
     /// Control Center end instead of leaving it as the first item evicted when
@@ -84,15 +91,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let stats = NoteStore.shared.stats()
             listenLog("memory ready notes=\(stats.notes) concepts=\(stats.concepts) relationships=\(stats.relationships)")
         }
+        resumePendingConversationReports()
         if settings.wake_word_enabled { enableWakeWord() }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        reportRecoveryTask?.cancel()
         hotkey.stop()
         wakeWord.stop()
         recorder.discard()
         speaker.stop()
         NoteStore.shared.flush()
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard conversationRecorder.isRecording else { return .terminateNow }
+        if terminationTask != nil { return .terminateLater }
+
+        // AppKit must wait for the rolling AAC writer and manifest. Otherwise
+        // a normal Quit can leave an open container and a permanent
+        // "recording" session on disk.
+        hotkey.stop()
+        wakeWord.stop()
+        speaker.stop()
+        terminationTask = Task { [weak self, weak sender] in
+            guard let self else {
+                sender?.reply(toApplicationShouldTerminate: true)
+                return
+            }
+            let draft = await self.conversationRecorder.stop(manifestState: "saved")
+            if let draft {
+                listenLog("conversation finalized for quit id=\(draft.id) chunks=\(draft.chunks.count)")
+            }
+            self.terminationTask = nil
+            sender?.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -184,7 +218,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var statusItemWidth: CGFloat {
-        StatusAppearance.itemLength(font: Self.statusFont, padding: settings.menubar_text_padding)
+        StatusAppearance.itemLength(
+            idleText: "Listen",
+            idleFont: idleStatusFont,
+            activeText: "listening",
+            activeFont: Self.activeStatusFont,
+            padding: settings.menubar_text_padding
+        )
     }
 
     private var isMicrophoneActiveForStatus: Bool {
@@ -231,20 +271,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.alignment = .center
         statusItem.isVisible = true
         statusItem.length = statusItemWidth
+        let text = statusText()
+        let font = isMicrophoneActiveForStatus ? Self.activeStatusFont : idleStatusFont
         if isVisuallyActive {
             animationPhase = (animationPhase + 0.014 * StatusAppearance.speed(settings.menubar_animation_speed))
                 .truncatingRemainder(dividingBy: 1)
             button.attributedTitle = StatusAppearance.attributedTitle(
-                statusText(),
-                font: Self.statusFont,
+                text,
+                font: font,
                 styleName: settings.menubar_color_style,
                 phase: animationPhase,
                 intensity: settings.menubar_color_intensity
             )
         } else {
             button.attributedTitle = NSAttributedString(
-                string: statusText(),
-                attributes: [.foregroundColor: NSColor.labelColor, .font: Self.statusFont, .kern: 0.05]
+                string: text,
+                attributes: [.foregroundColor: NSColor.labelColor, .font: font, .kern: 0.05]
             )
         }
         button.toolTip = accessibilityStatus
@@ -408,9 +450,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func applySettings(_ new: AppSettings) {
         let old = settings
+        let hadSTT = stt != nil
         settings = new
         SettingsStore.save(new)
         reloadProviders()
+        if !hadSTT, stt != nil { resumePendingConversationReports() }
         speaker.configure(new)
         if old.hotkey != new.hotkey { hotkey.start(keyName: new.hotkey) }
         if old.wake_word_enabled != new.wake_word_enabled {
@@ -603,7 +647,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .quickThought:
                 let answer = await answerThought(text)
                 guard id == session, !Task.isCancelled else { return }
-                NoteStore.shared.append(VoiceNote(kind: .quickThought, thought: text, response: answer))
+                do {
+                    try await NoteStore.shared.append(
+                        VoiceNote(kind: .quickThought, thought: text, response: answer)
+                    )
+                } catch {
+                    listenLog("quick thought note persist failed id=\(id) error=\(error.localizedDescription)")
+                    responsePresenter.show(
+                        heading: "Quick Thought — not saved", thought: text, answer: answer, compact: true
+                    )
+                    speaker.speak(answer, enabled: settings.tts_enabled)
+                    notify("Quick Thought answered, but local save failed")
+                    return
+                }
                 responsePresenter.show(heading: "Quick Thought", thought: text, answer: answer, compact: true)
                 speaker.speak(answer, enabled: settings.tts_enabled)
                 listenLog("quick thought complete id=\(id) thought_chars=\(text.count) response_chars=\(answer.count)")
@@ -718,8 +774,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         assistantTask = Task {
             let answer = await answerThought(text)
             guard id == voiceSession, !Task.isCancelled else { return }
-            NoteStore.shared.append(VoiceNote(kind: .wakeConversation, thought: text, response: answer))
-            responsePresenter.show(heading: "Listen", thought: text, answer: answer)
+            let saved: Bool
+            do {
+                try await NoteStore.shared.append(
+                    VoiceNote(kind: .wakeConversation, thought: text, response: answer)
+                )
+                saved = true
+            } catch {
+                saved = false
+                listenLog("wake note persist failed id=\(id) error=\(error.localizedDescription)")
+                notify("Wake reply ready, but local save failed")
+            }
+            responsePresenter.show(heading: saved ? "Listen" : "Listen — not saved", thought: text, answer: answer)
             backgroundStatus = nil
             wakeWord.continueConversation()
             speaker.speak(answer, enabled: settings.tts_enabled)
@@ -744,7 +810,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             let directory = try conversationRecorder.start(chunkMinutes: settings.conversation_chunk_minutes)
             playChime("Tink")
-            NSLog("[Listen] local session directory: \(directory.path)")
+            NSLog("[Listen] local session id: \(directory.lastPathComponent)")
             listenLog("conversation start directory=\(directory.lastPathComponent)")
             rebuildMenu()
         } catch { notify("Recorder error: \(error.localizedDescription)") }
@@ -760,46 +826,79 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 rebuildMenu(); return
             }
             listenLog("conversation stopped id=\(draft.id) chunks=\(draft.chunks.count)")
-            guard let stt else {
-                if activeReportProcesses == 0 { backgroundStatus = nil }
-                notify("Audio saved; configure STT to create its report.")
-                rebuildMenu(); return
+            await processConversationDraft(draft, announce: true)
+        }
+    }
+
+    private func resumePendingConversationReports() {
+        reportRecoveryTask?.cancel()
+        reportRecoveryTask = Task { [weak self] in
+            let drafts = await Task.detached(priority: .utility) {
+                ConversationProcessor.recoverableDrafts()
+            }.value
+            guard let self, !drafts.isEmpty else { return }
+            listenLog("conversation recovery pending=\(drafts.count)")
+            for draft in drafts where !Task.isCancelled {
+                await self.processConversationDraft(draft, announce: false)
             }
-            activeReportProcesses += 1
-            defer {
-                activeReportProcesses -= 1
-                backgroundStatus = activeReportProcesses == 0 ? nil : "processing \(activeReportProcesses) reports"
-                rebuildMenu()
-            }
-            do {
-                let reportURL = try await ConversationProcessor.process(
-                    draft, stt: stt, assistant: assistant
-                ) { [weak self] message in
-                    DispatchQueue.main.async {
-                        self?.backgroundStatus = message
-                        self?.renderStatus()
-                    }
+        }
+    }
+
+    private func processConversationDraft(_ draft: ConversationDraft, announce: Bool) async {
+        guard let stt else {
+            if activeReportProcesses == 0 { backgroundStatus = nil }
+            if announce { notify("Audio saved; configure STT to create its report.") }
+            rebuildMenu()
+            return
+        }
+        activeReportProcesses += 1
+        defer {
+            activeReportProcesses -= 1
+            backgroundStatus = activeReportProcesses == 0 ? nil : "processing \(activeReportProcesses) reports"
+            rebuildMenu()
+        }
+        do {
+            let reportURL = try await ConversationProcessor.process(
+                draft, stt: stt, assistant: assistant
+            ) { [weak self] message in
+                DispatchQueue.main.async {
+                    self?.backgroundStatus = message
+                    self?.renderStatus()
                 }
-                guard !Task.isCancelled else { return }
-                let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
-                if let data = try? Data(contentsOf: draft.directory.appendingPathComponent("report.json")),
-                   let report = try? decoder.decode(ConversationReport.self, from: data) {
-                    NoteStore.shared.append(VoiceNote(
+            }
+            guard !Task.isCancelled else { return }
+            let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+            if let data = try? Data(contentsOf: draft.directory.appendingPathComponent("report.json")),
+               let report = try? decoder.decode(ConversationReport.self, from: data) {
+                do {
+                    try await NoteStore.shared.append(VoiceNote(
                         kind: .recordedConversation, thought: report.overview,
                         response: report.actionsAndDecisions, sessionID: report.id,
                         reportPath: reportURL.path
                     ))
+                } catch {
+                    // The self-contained report remains canonical and safe;
+                    // disclose that its secondary Notes index failed.
+                    listenLog("conversation note index failed id=\(report.id) error=\(error.localizedDescription)")
+                    if announce { notify("Report saved; Notes indexing failed") }
                 }
-                responsePresenter.show(heading: "Conversation ready", thought: "", answer: "Report, transcript, audio, and analyses are saved locally.")
-                listenLog("conversation report complete id=\(draft.id)")
-                showConversations(selecting: draft.id)
-            } catch is CancellationError {
-                return
-            } catch {
-                listenLog("conversation report failed id=\(draft.id) error=\(error.localizedDescription)")
-                notify("Report failed: \(error.localizedDescription)")
-                NSLog("[Listen] conversation processing error: \(error)")
             }
+            if announce {
+                responsePresenter.show(
+                    heading: "Conversation ready", thought: "",
+                    answer: "Report, transcript, audio, and analyses are saved locally."
+                )
+                showConversations(selecting: draft.id)
+            } else {
+                conversationsModel?.refresh(selecting: draft.id)
+            }
+            listenLog("conversation report complete id=\(draft.id) recovered=\(!announce)")
+        } catch is CancellationError {
+            return
+        } catch {
+            listenLog("conversation report failed id=\(draft.id) error=\(error.localizedDescription)")
+            if announce { notify("Report failed: \(error.localizedDescription)") }
+            NSLog("[Listen] conversation processing error: \(error)")
         }
     }
 

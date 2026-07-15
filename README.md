@@ -28,7 +28,8 @@ On first launch it also anchors itself at the Control Center end of the bar,
 where the system privacy module cannot push it beneath a MacBook notch; a later
 Command-drag still sets and preserves the user's preferred position.
 Preferences → Appearance provides live animated previews for Rainbow, Aurora,
-Ocean, and Sunset, along with speed, intensity, and text-spacing controls.
+Ocean, and Sunset, along with speed, intensity, idle text-size, and spacing
+controls.
 
 ## Local data
 
@@ -88,6 +89,13 @@ Configuration is field-by-field backward compatible with the original
 Spoken replies use xAI TTS voice `o79hvd0m`, matching the retired voice daemon;
 interruptible system speech remains the automatic offline/error fallback.
 
+Conversation reports can optionally use Hermes for deeper analysis. Listen
+invokes the documented `hermes --oneshot` CLI with an empty toolset; it does not
+import Hermes's private Python packages or assume a checkout under `~/.hermes`.
+Integrators that need stdin for very large reports can provide a versioned
+`listen-hermes-adapter-v1` executable (or set `LISTEN_HERMES_ADAPTER_V1`); the
+adapter receives the prompt on stdin and returns only the analysis on stdout.
+
 ## Build
 
 The production app is native Swift and is built, bundled, and signed with the
@@ -120,12 +128,13 @@ ListenMac/Tests/run-stress-tests.sh
 ```
 
 It compiles under the production concurrency settings, hammers queued AAC
-writes, checks legacy config decoding, exercises wake-phrase and assistant-echo
-boundaries, verifies reply continuity and local graph/RAG recovery across 1,200
-notes, verifies rolling-file limits and week-scale frame progression,
-simulates a 24-part long session, validates every report artifact, persists
-on-demand analysis, rejects transcript HTML injection, and verifies the report
-contains no remote asset URL.
+writes and route-rate changes, checks legacy config decoding, exercises
+wake-phrase, side-specific hotkey, multilingual token-spacing, and
+assistant-echo boundaries, verifies durable note-error propagation plus local
+graph/RAG recovery across 1,200 notes, verifies circular pre-roll and week-scale
+rolling progression, simulates a 24-part long session, races concurrent report
+analyses, validates every report artifact, rejects transcript HTML injection,
+and verifies the report contains no remote asset URL.
 
 Runtime state transitions are written privately to `/tmp/listen.err.log`; paste
 delivery diagnostics remain in `/tmp/listen-paste.log`.

@@ -62,6 +62,27 @@ final class SpeechEchoGate: @unchecked Sendable {
             && (tokens.first?.normalized.count ?? 0) >= 5
         guard mostlyEcho || singleDistinctEcho || leadingEcho >= 3 else { return clean }
 
+        if mostlyEcho, leadingEcho == 0 {
+            // Recognition often prepends a filler ("uh …") before decoding
+            // the speaker response. That breaks a strict leading-echo test,
+            // so locate the dominant echo span and keep only a genuine suffix.
+            let matchingIndices = tokens.indices.filter { reference.contains(tokens[$0].normalized) }
+            guard let firstMatch = matchingIndices.first,
+                  let lastMatch = matchingIndices.last else { return nil }
+            let fillerWords: Set<String> = ["uh", "um", "er", "ah", "hmm", "like"]
+            let prefixIsOnlyFiller = tokens[..<firstMatch].allSatisfy {
+                fillerWords.contains($0.normalized)
+            }
+            let suffix = tokens.index(after: lastMatch)..<tokens.endIndex
+            if let protectedIndex = suffix.first(where: { protectedCommands.contains(tokens[$0].normalized) }) {
+                return tokens[protectedIndex...].map(\.original).joined(separator: " ")
+            }
+            if prefixIsOnlyFiller, !suffix.isEmpty {
+                return tokens[suffix].map(\.original).joined(separator: " ")
+            }
+            return nil
+        }
+
         guard leadingEcho < tokens.count else { return nil }
         let remainder = tokens.dropFirst(leadingEcho).map(\.original).joined(separator: " ")
         return remainder.isEmpty ? nil : remainder

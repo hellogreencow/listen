@@ -27,6 +27,7 @@ struct AppSettings: Codable {
     var menubar_animation_speed: Double = StatusAppearance.defaultSpeed
     var menubar_color_intensity: Double = StatusAppearance.defaultIntensity
     var menubar_text_padding: Double = StatusAppearance.defaultTextPadding
+    var menubar_text_size: Double = StatusAppearance.defaultIdleTextSize
 
     var elevenlabs_model: String = "scribe_v1"
     var openai_whisper_model: String = "whisper-1"
@@ -52,6 +53,7 @@ struct AppSettings: Codable {
         case wake_word_enabled, wake_word_phrase, wake_conversation_timeout
         case tts_enabled, tts_provider, xai_api_key, xai_voice_id, conversation_chunk_minutes
         case menubar_color_style, menubar_animation_speed, menubar_color_intensity, menubar_text_padding
+        case menubar_text_size
         case elevenlabs_model, openai_whisper_model, openai_cleanup_model
         case openrouter_model, groq_stt_model, groq_model
         case cleanup_prompt
@@ -86,6 +88,7 @@ struct AppSettings: Codable {
         menubar_animation_speed = c.value(.menubar_animation_speed, d.menubar_animation_speed)
         menubar_color_intensity = c.value(.menubar_color_intensity, d.menubar_color_intensity)
         menubar_text_padding = c.value(.menubar_text_padding, d.menubar_text_padding)
+        menubar_text_size = c.value(.menubar_text_size, d.menubar_text_size)
         elevenlabs_model     = c.value(.elevenlabs_model, d.elevenlabs_model)
         openai_whisper_model = c.value(.openai_whisper_model, d.openai_whisper_model)
         openai_cleanup_model = c.value(.openai_cleanup_model, d.openai_cleanup_model)

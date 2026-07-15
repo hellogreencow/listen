@@ -6,13 +6,14 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 OUT="$TMP/listen-stress"
 swiftc -O -swift-version 6 -warnings-as-errors -target arm64-apple-macos13.0 -sdk "$SDK" \
-  -framework AppKit -framework AVFoundation -framework Speech -framework CoreAudio \
+  -framework AppKit -framework AVFoundation -framework Speech -framework CoreAudio -framework Carbon \
   ListenMac/Sources/Diagnostics.swift \
   ListenMac/Sources/AudioEngine.swift \
   ListenMac/Sources/SpeechEchoGate.swift \
   ListenMac/Sources/XAITTS.swift \
   ListenMac/Sources/Memory.swift \
   ListenMac/Sources/WakeWord.swift \
+  ListenMac/Sources/Hotkey.swift \
   ListenMac/Sources/Providers.swift \
   ListenMac/Sources/StatusAppearance.swift \
   ListenMac/Sources/Settings.swift \

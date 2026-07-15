@@ -11,6 +11,12 @@ import Carbon.HIToolbox
 /// Either way, the user never sees the Input Monitoring prompt.
 @MainActor
 final class Hotkey {
+    nonisolated static let leftCommandDeviceMask: UInt = 0x0000_0008 // NX_DEVICELCMDKEYMASK
+
+    nonisolated static func isLeftCommandDown(in flags: NSEvent.ModifierFlags) -> Bool {
+        flags.rawValue & leftCommandDeviceMask != 0
+    }
+
     var onPress: () -> Void = {}
     var onRelease: () -> Void = {}
     var onCancel: () -> Void = {}
@@ -78,6 +84,8 @@ final class Hotkey {
     }
 
     func stop() {
+        let shouldCancelCapture = pressed || quickPressed
+        if shouldCancelCapture { onCancel() }
         if let m = globalMonitor { NSEvent.removeMonitor(m) }
         if let m = localMonitor  { NSEvent.removeMonitor(m) }
         globalMonitor = nil
@@ -92,7 +100,10 @@ final class Hotkey {
     private func handle(_ event: NSEvent) {
         let code = Int(event.keyCode)
         if event.type == .flagsChanged, code == kVK_Command {
-            leftCommandDown = event.modifierFlags.contains(.command)
+            // `.command` combines both sides, so it remains set when Left
+            // Command is released while Right Command is still down. The
+            // device-dependent left bit tracks the physical chord edge.
+            leftCommandDown = Self.isLeftCommandDown(in: event.modifierFlags)
         }
 
         // Quick Thought is a fixed muscle-memory chord independent of the

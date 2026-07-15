@@ -7,7 +7,8 @@ import Foundation
 @MainActor
 final class Recorder {
     private let engine: AudioEngine
-    private let token: String
+    private let tokenPrefix: String
+    private var activeToken: String?
     private var writer: M4AStreamWriter?
     private var sinkID: UUID?
     private(set) var lastURL: URL?
@@ -15,21 +16,26 @@ final class Recorder {
 
     init(engine: AudioEngine = .shared, token: String = "short-capture") {
         self.engine = engine
-        self.token = token
+        self.tokenPrefix = token
     }
 
     func start() throws {
         if isRecording { discard() }
-        let wasRunning = engine.engineRunning
+        let initialState = engine.stateSnapshot()
+        // Each capture owns a unique lease. A previous stop may still be
+        // draining its AAC queue when a rapid re-press begins; reusing a Set
+        // token would let that old stop release the new capture's microphone.
+        let token = "\(tokenPrefix)-\(UUID().uuidString)"
         try engine.acquire(token)
+        activeToken = token
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("listen-\(UUID().uuidString).m4a")
         let stream = M4AStreamWriter(url: tmp)
         // Only seed pre-roll when another mode had already been listening.
         // A just-started engine's ring is intentionally empty.
-        if wasRunning {
+        if initialState.isRunning {
             let preRoll = engine.recentSamples(seconds: 0.18)
-            if !preRoll.isEmpty { stream.append(samples: preRoll, rate: engine.nativeRate) }
+            if !preRoll.isEmpty { stream.append(samples: preRoll, rate: initialState.nativeRate) }
         }
         let id = engine.addSink { [weak stream] samples, rate in
             stream?.append(samples: samples, rate: rate)
@@ -54,9 +60,10 @@ final class Recorder {
         let stream = writer
         writer = nil
         let url = lastURL
+        if let activeToken { engine.release(activeToken) }
+        self.activeToken = nil
         // close() drains the writer's serial queue and finalizes the m4a.
         await Task.detached(priority: .userInitiated) { stream?.close() }.value
-        engine.release(token)
         return url
     }
 
@@ -71,7 +78,8 @@ final class Recorder {
         let stream = writer
         writer = nil
         let url = lastURL
-        engine.release(token)
+        if let activeToken { engine.release(activeToken) }
+        self.activeToken = nil
         Task.detached(priority: .utility) {
             stream?.close()
             if let url { try? FileManager.default.removeItem(at: url) }

@@ -8,6 +8,7 @@ final class NotesModel: ObservableObject {
     @Published private(set) var notes: [VoiceNote] = []
     @Published private(set) var graphStats = MemoryGraphStats(notes: 0, concepts: 0, relationships: 0)
     private var observer: NSObjectProtocol?
+    private var refreshGeneration = 0
 
     init() {
         refresh()
@@ -29,8 +30,18 @@ final class NotesModel: ObservableObject {
     }
 
     func refresh() {
-        notes = NoteStore.shared.load()
-        graphStats = NoteStore.shared.stats()
+        refreshGeneration &+= 1
+        let generation = refreshGeneration
+        Task { [weak self] in
+            let snapshot = await Task.detached(priority: .userInitiated) {
+                NoteStore.shared.snapshot()
+            }.value
+            guard let self, self.refreshGeneration == generation else { return }
+            // Publish one coherent store snapshot; the note count and graph
+            // statistics can never visibly describe different ledger states.
+            self.notes = snapshot.notes
+            self.graphStats = snapshot.stats
+        }
     }
 }
 

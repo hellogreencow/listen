@@ -2,6 +2,106 @@ import AVFoundation
 import CoreAudio
 import Foundation
 
+/// Fixed-capacity circular storage for the microphone pre-roll. Appending is
+/// O(new samples) even after the buffer is full; no tap callback ever shifts
+/// the previous 30 seconds of audio in memory.
+struct CircularSampleBuffer: Sendable {
+    private var storage: [Float]
+    private var start = 0
+    private(set) var count = 0
+
+    init(capacity: Int = 0) {
+        storage = Array(repeating: 0, count: max(0, capacity))
+    }
+
+    var capacity: Int { storage.count }
+
+    mutating func reset(capacity: Int) {
+        storage = Array(repeating: 0, count: max(0, capacity))
+        start = 0
+        count = 0
+    }
+
+    mutating func removeAll(keepingCapacity: Bool = true) {
+        if !keepingCapacity { storage.removeAll(keepingCapacity: false) }
+        start = 0
+        count = 0
+    }
+
+    mutating func append(_ samples: [Float]) {
+        let bufferCapacity = storage.count
+        guard !samples.isEmpty, bufferCapacity > 0 else { return }
+        let incomingCount = samples.count
+        if incomingCount >= bufferCapacity {
+            samples.withUnsafeBufferPointer { source in
+                storage.withUnsafeMutableBufferPointer { destination in
+                    guard let sourceBase = source.baseAddress,
+                          let destinationBase = destination.baseAddress else { return }
+                    destinationBase.update(
+                        from: sourceBase + (incomingCount - bufferCapacity), count: bufferCapacity
+                    )
+                }
+            }
+            start = 0
+            count = bufferCapacity
+            return
+        }
+
+        // Compute the old logical end before advancing start for overwritten
+        // samples; that is exactly where the new samples belong.
+        let writeIndex = (start + count) % bufferCapacity
+        let overwritten = max(0, count + incomingCount - bufferCapacity)
+        if overwritten > 0 {
+            start = (start + overwritten) % bufferCapacity
+            count -= overwritten
+        }
+
+        samples.withUnsafeBufferPointer { source in
+            storage.withUnsafeMutableBufferPointer { destination in
+                guard let sourceBase = source.baseAddress,
+                      let destinationBase = destination.baseAddress else { return }
+                let firstCount = min(incomingCount, bufferCapacity - writeIndex)
+                (destinationBase + writeIndex).update(from: sourceBase, count: firstCount)
+                let secondCount = incomingCount - firstCount
+                if secondCount > 0 {
+                    destinationBase.update(from: sourceBase + firstCount, count: secondCount)
+                }
+            }
+        }
+        count += incomingCount
+    }
+
+    func suffix(_ requestedCount: Int) -> [Float] {
+        let resultCount = min(max(0, requestedCount), count)
+        guard resultCount > 0, capacity > 0 else { return [] }
+        let firstIndex = (start + count - resultCount) % capacity
+        let firstCount = min(resultCount, capacity - firstIndex)
+        var result: [Float] = []
+        result.reserveCapacity(resultCount)
+        result.append(contentsOf: storage[firstIndex..<(firstIndex + firstCount)])
+        let secondCount = resultCount - firstCount
+        if secondCount > 0 { result.append(contentsOf: storage[0..<secondCount]) }
+        return result
+    }
+
+    func rms(last requestedCount: Int) -> Float {
+        let sampleCount = min(max(0, requestedCount), count)
+        guard sampleCount > 0, capacity > 0 else { return 0 }
+        let firstIndex = (start + count - sampleCount) % capacity
+        var sum: Float = 0
+        for offset in 0..<sampleCount {
+            let value = storage[(firstIndex + offset) % capacity]
+            sum += value * value
+        }
+        return sqrt(sum / Float(sampleCount))
+    }
+}
+
+struct AudioEngineState: Sendable {
+    let isRunning: Bool
+    let nativeRate: Double
+}
+
 /// The single owner of the microphone. Every mode (dictation, quick thought,
 /// wake word, conversation recording) is a consumer of the same input tap.
 ///
@@ -25,16 +125,16 @@ final class AudioEngine: @unchecked Sendable {
 
     // ── Engine ───────────────────────────────────────────────────
     private var engine = AVAudioEngine()
-    private(set) var engineRunning = false
-    private(set) var nativeRate: Double = 48_000
+    private var engineRunning = false
+    private var nativeRate: Double = 48_000
     private var isRestarting = false
 
     // ── Ring buffer (mono float32 @ nativeRate) ──────────────────
-    private var ring = [Float]()
+    private var ring = CircularSampleBuffer()
     private let ringLock = NSLock()
     /// Monotonic count of all samples ever appended; lets consumers mark a
     /// position and later slice exactly the audio spoken since the mark.
-    private(set) var totalSamples: UInt64 = 0
+    private var totalSamples: UInt64 = 0
     private static let ringSeconds: Double = 30
 
     // ── Sinks: mono tap audio fan-out (file writers, etc.) ──────
@@ -113,6 +213,12 @@ final class AudioEngine: @unchecked Sendable {
         return !consumers.isEmpty
     }
 
+    func stateSnapshot() -> AudioEngineState {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return AudioEngineState(isRunning: engineRunning, nativeRate: nativeRate)
+    }
+
     func isTapHealthy(within seconds: TimeInterval = 3.0) -> Bool {
         tapHealthLock.lock()
         let lastAppend = lastTapAppendAt
@@ -153,29 +259,27 @@ final class AudioEngine: @unchecked Sendable {
         defer { ringLock.unlock() }
         guard totalSamples > marker else { return [] }
         let wanted = Int(min(totalSamples - marker, UInt64(ring.count)))
-        return Array(ring.suffix(wanted))
+        return ring.suffix(wanted)
     }
 
     /// The most recent `seconds` of audio.
     func recentSamples(seconds: Double) -> [Float] {
+        let rate = stateSnapshot().nativeRate
         ringLock.lock()
         defer { ringLock.unlock() }
-        let n = min(ring.count, Int(nativeRate * seconds))
+        let n = min(ring.count, Int(rate * seconds))
         guard n > 0 else { return [] }
-        return Array(ring.suffix(n))
+        return ring.suffix(n)
     }
 
     /// RMS energy of the most recent `ms` milliseconds.
     func recentRMS(ms: Double) -> Float {
-        let n = max(1, Int(nativeRate * ms / 1000))
+        let n = max(1, Int(stateSnapshot().nativeRate * ms / 1000))
         ringLock.lock()
         guard ring.count >= n else { ringLock.unlock(); return 0 }
-        // Compute while holding the lock. An ArraySlice still aliases the
-        // ring's storage; unlocking before reduction races the tap append.
-        var sum: Float = 0
-        for sample in ring[(ring.count - n)...] { sum += sample * sample }
+        let value = ring.rms(last: n)
         ringLock.unlock()
-        return sqrt(sum / Float(n))
+        return value
     }
 
     // MARK: - Engine internals (stateLock held)
@@ -188,6 +292,9 @@ final class AudioEngine: @unchecked Sendable {
                 NSLocalizedDescriptionKey: "Input audio format is temporarily invalid (route change?)"])
         }
         nativeRate = fmt.sampleRate
+        ringLock.lock()
+        ring.reset(capacity: max(1, Int(nativeRate * Self.ringSeconds)))
+        ringLock.unlock()
 
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak self] buf, _ in
             self?.consumeTap(buf)
@@ -199,7 +306,15 @@ final class AudioEngine: @unchecked Sendable {
         engine.mainMixerNode.outputVolume = 0
 
         engine.prepare()
-        try engine.start()
+        do {
+            try engine.start()
+        } catch {
+            // A retained tap makes the next acquire fail when it attempts to
+            // install another tap on bus zero. Restore a retryable engine.
+            engine.stop()
+            inputNode.removeTap(onBus: 0)
+            throw error
+        }
         engineRunning = true
         tapHealthLock.lock()
         engineStartTime = Date()
@@ -256,11 +371,12 @@ final class AudioEngine: @unchecked Sendable {
             for i in 0..<frames { mono[i] /= d }
         }
 
+        // The tap's own immutable format is the authoritative rate for this
+        // buffer and avoids taking stateLock on the real-time audio thread.
+        let rate = buf.format.sampleRate
         ringLock.lock()
-        ring.append(contentsOf: mono)
         totalSamples &+= UInt64(frames)
-        let maxKeep = Int(nativeRate * Self.ringSeconds)
-        if ring.count > maxKeep { ring.removeFirst(ring.count - maxKeep) }
+        ring.append(mono)
         ringLock.unlock()
 
         tapHealthLock.lock()
@@ -270,7 +386,7 @@ final class AudioEngine: @unchecked Sendable {
         sinkLock.lock()
         let currentSinks = Array(sinks.values)
         sinkLock.unlock()
-        for sink in currentSinks { sink(mono, nativeRate) }
+        for sink in currentSinks { sink(mono, rate) }
 
         if !(muteSpeechConsumer?() ?? false) {
             speechConsumer?(buf)
@@ -464,12 +580,32 @@ enum AudioEncode {
     }
 }
 
+private final class ConverterInputBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private let buffer: AVAudioPCMBuffer
+    private var supplied = false
+
+    init(_ buffer: AVAudioPCMBuffer) { self.buffer = buffer }
+
+    func next(_ status: UnsafeMutablePointer<AVAudioConverterInputStatus>) -> AVAudioBuffer? {
+        lock.lock()
+        defer { lock.unlock() }
+        if supplied {
+            status.pointee = .endOfStream
+            return nil
+        }
+        supplied = true
+        status.pointee = .haveData
+        return buffer
+    }
+}
+
 /// Streaming AAC writer fed from the engine tap — used by the conversation
 /// recorder for unbounded recordings (audio goes straight to disk, not RAM).
 final class M4AStreamWriter: @unchecked Sendable {
     let url: URL
     private var file: AVAudioFile?
-    private var fmt: AVAudioFormat?
+    private var fileFormat: AVAudioFormat?
     private let queue = DispatchQueue(label: "com.listen.m4a-writer", qos: .utility)
     private var queuedFrames: UInt64 = 0
 
@@ -491,20 +627,53 @@ final class M4AStreamWriter: @unchecked Sendable {
                 ]
                 file = try? AVAudioFile(forWriting: url, settings: settings,
                                         commonFormat: .pcmFormatFloat32, interleaved: false)
-                fmt = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate,
-                                    channels: 1, interleaved: false)
+                fileFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate,
+                                           channels: 1, interleaved: false)
                 if file == nil { NSLog("[Listen] M4AStreamWriter: failed to open \(url.lastPathComponent)") }
             }
-            guard let file, let fmt,
-                  let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(samples.count)) else { return }
-            buf.frameLength = AVAudioFrameCount(samples.count)
+            guard let file, let fileFormat,
+                  let inputFormat = AVAudioFormat(
+                    commonFormat: .pcmFormatFloat32, sampleRate: rate,
+                    channels: 1, interleaved: false
+                  ),
+                  let inputBuffer = AVAudioPCMBuffer(
+                    pcmFormat: inputFormat, frameCapacity: AVAudioFrameCount(samples.count)
+                  ) else { return }
+            inputBuffer.frameLength = AVAudioFrameCount(samples.count)
             samples.withUnsafeBufferPointer { src in
                 guard let base = src.baseAddress else { return }
-                buf.floatChannelData![0].update(from: base, count: samples.count)
+                inputBuffer.floatChannelData![0].update(from: base, count: samples.count)
+            }
+
+            let bufferToWrite: AVAudioPCMBuffer
+            if abs(fileFormat.sampleRate - rate) < 0.5 {
+                bufferToWrite = inputBuffer
+            } else {
+                // A route change can alter the tap rate mid-capture. Build the
+                // incoming buffer with its true metadata, then resample into
+                // the file's fixed processing format instead of replaying it
+                // at the wrong speed/pitch.
+                guard let converter = AVAudioConverter(from: inputFormat, to: fileFormat) else {
+                    NSLog("[Listen] M4AStreamWriter: cannot convert \(Int(rate)) to \(Int(fileFormat.sampleRate)) Hz")
+                    return
+                }
+                let ratio = fileFormat.sampleRate / rate
+                let capacity = AVAudioFrameCount(ceil(Double(samples.count) * ratio) + 32)
+                guard let converted = AVAudioPCMBuffer(pcmFormat: fileFormat, frameCapacity: capacity) else { return }
+                let converterInput = ConverterInputBox(inputBuffer)
+                var conversionError: NSError?
+                let status = converter.convert(to: converted, error: &conversionError) { _, inputStatus in
+                    converterInput.next(inputStatus)
+                }
+                guard status != .error, conversionError == nil else {
+                    NSLog("[Listen] M4AStreamWriter conversion failed: \(conversionError?.localizedDescription ?? "unknown error")")
+                    return
+                }
+                bufferToWrite = converted
             }
             do {
-                try file.write(from: buf)
-                queuedFrames &+= UInt64(samples.count)
+                try file.write(from: bufferToWrite)
+                queuedFrames &+= UInt64(bufferToWrite.frameLength)
             } catch {
                 NSLog("[Listen] M4AStreamWriter write failed: \(error.localizedDescription)")
             }
@@ -516,7 +685,7 @@ final class M4AStreamWriter: @unchecked Sendable {
     func close() {
         queue.sync {
             file = nil
-            fmt = nil
+            fileFormat = nil
         }
     }
 

@@ -277,10 +277,16 @@ Common error codes you'll see in `/tmp/listen-paste.log`:
   network, JSON, or speech-analysis work directly inside `consumeTap`.
 
 - **Consumer tokens define mic privacy.** Wake and conversation hold persistent
-  tokens; hold captures hold a short token. When the set is empty the engine
-  stops after the two-second anti-churn grace and logs `mic closed`. Wake word
+  tokens; every hold capture owns a unique lease so an older async AAC close
+  can never release a rapid re-press. When the set is empty the engine stops
+  after the two-second anti-churn grace and logs `mic closed`. Wake word
   defaults off and is the only path that may request Speech permission just by
   being enabled.
+
+- **The 30-second pre-roll is a fixed circular buffer.** Never restore
+  `Array.removeFirst` on the tap path: once full, that shifts roughly 1.4
+  million samples per callback. Allocate/resize outside the real-time callback
+  and use the tap buffer's own sample rate while consuming it.
 
 - **Do not couple Listen back to OpenClaw.** Direct configured LLM calls are the
   v1 fast path. Identity, gateway WebSockets, screen context, native actions,
@@ -293,9 +299,16 @@ Common error codes you'll see in `/tmp/listen-paste.log`:
   ids from separate provider requests must be labeled per audio part rather
   than falsely merged across chunks.
 
+- **Normal Quit finalizes active conversation audio before AppKit exits.** Use
+  terminate-later, await the writer close, and synchronously move the manifest
+  out of `recording`. Route sample-rate changes roll the long-form file; short
+  writers resample into their existing file format.
+
 - **Notes are append-only JSONL.** Quick Thought, wake turns, and completed
-  conversation reports append to `~/.listen/notes/notes.jsonl`. One malformed
-  final line must never make earlier notes unreadable.
+  conversation reports append to `~/.listen/notes/notes.jsonl`. Capture UI may
+  confirm "saved" only after the async throwing append has synchronized and
+  closed the canonical ledger. One malformed final line must never make earlier
+  notes unreadable.
 
 - **Assistant memory is local-first graph RAG.** Quick Thought and wake turns
   retrieve immediate conversational context plus lexically/graph-related notes
@@ -309,6 +322,12 @@ Common error codes you'll see in `/tmp/listen-paste.log`:
   playback and in-flight network work interruptible for barge-in, never log
   the xAI key, and retain system synthesis as an automatic fallback.
 
+- **Hermes analysis uses a public process boundary.** Prefer the documented
+  `hermes --oneshot` CLI or the versioned stdin/stdout
+  `listen-hermes-adapter-v1` contract. Never import `hermes_cli` internals or
+  hardcode a Hermes source checkout. Cancellation must terminate and reap the
+  child process.
+
 - **Quick Thought uses the compact response card.** It stays non-activating,
   accepts native two-finger and click-drag swipe dismissal, and must not make
   wake, microphone-test, or conversation-complete response panels compact.
@@ -318,9 +337,11 @@ Common error codes you'll see in `/tmp/listen-paste.log`:
 - **The menubar active color uses `attributedTitle`.** `renderStatus()` owns the
   animation timer; it must stop when all activity is idle. Continue routing
   temporary messages through `transientMessage`, never raw title mutation. The
-  item reserves the measured full `listening` width at all times and uses the
-  compact status font plus a right gutter; widening it can cause macOS to hide
-  Listen when its microphone privacy item enters a crowded notched menu bar.
+  item reserves the larger measured width of idle and active labels at all
+  times. Idle "Listen" uses an adjustable medium-weight font (12–15 pt, 14 pt
+  default); active "listening" stays condensed so the mic can start without a
+  width change. Widening the slot can cause macOS to hide Listen when its
+  microphone privacy item enters a crowded notched menu bar.
   `Listen_Status_v1` is also a compatibility identity: seed its preferred
   position to ordinal zero *before* creating the `NSStatusItem`, then assign it
   as `autosaveName`. This keeps Listen beside the Control Center end when the
@@ -328,7 +349,8 @@ Common error codes you'll see in `/tmp/listen-paste.log`:
   Do not rename it, seed after item creation, or overwrite an existing value.
   Active text is a per-character horizontal gradient selected in Appearance;
   never collapse it back to one color for the whole word. Style, speed,
-  intensity, and bounded breathing room are backward-compatible config fields.
+  intensity, idle size, and bounded breathing room are backward-compatible
+  config fields.
   The fixed width must be recalculated immediately when padding changes.
 
 - **Production runtime truth is `/tmp/listen.err.log`.** It is bounded and

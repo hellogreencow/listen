@@ -20,6 +20,7 @@ final class ConversationLibraryModel: ObservableObject {
 
     private let onAnalyze: (String, String, ConversationAnalysisSource) -> Void
     private let onRefreshFocus: (String, ConversationAnalysisSource) -> Void
+    private var refreshGeneration = 0
 
     init(
         selecting sessionID: String? = nil,
@@ -54,13 +55,22 @@ final class ConversationLibraryModel: ObservableObject {
     var isBusy: Bool { busyLabel != nil }
 
     func refresh(selecting requestedID: String? = nil) {
-        reports = ConversationProcessor.loadReports()
-        if let requestedID, reports.contains(where: { $0.id == requestedID }) {
-            selectedID = requestedID
-        } else if let selectedID, reports.contains(where: { $0.id == selectedID }) {
-            self.selectedID = selectedID
-        } else {
-            selectedID = reports.first?.id
+        refreshGeneration &+= 1
+        let generation = refreshGeneration
+        let priorSelection = selectedID
+        Task { [weak self] in
+            let loaded = await Task.detached(priority: .userInitiated) {
+                ConversationProcessor.loadReports()
+            }.value
+            guard let self, self.refreshGeneration == generation else { return }
+            self.reports = loaded
+            if let requestedID, loaded.contains(where: { $0.id == requestedID }) {
+                self.selectedID = requestedID
+            } else if let priorSelection, loaded.contains(where: { $0.id == priorSelection }) {
+                self.selectedID = priorSelection
+            } else {
+                self.selectedID = loaded.first?.id
+            }
         }
     }
 

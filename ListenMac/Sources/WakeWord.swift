@@ -35,6 +35,7 @@ final class WakeWordController: @unchecked Sendable {
     private var phase: Phase = .stopped
     private var phrase = "listen"
     private var timeout: TimeInterval = 30
+    private var lifecycleGeneration = 0
     private var generation = 0
     private var latestCandidate = ""
     private var heardSpeech = false
@@ -47,6 +48,8 @@ final class WakeWordController: @unchecked Sendable {
     func start(phrase: String, conversationTimeout: TimeInterval) {
         queue.async { [weak self] in
             guard let self else { return }
+            self.lifecycleGeneration &+= 1
+            let lifecycle = self.lifecycleGeneration
             self.phrase = phrase.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             if self.phrase.isEmpty { self.phrase = "listen" }
             self.timeout = max(8, conversationTimeout)
@@ -59,6 +62,7 @@ final class WakeWordController: @unchecked Sendable {
                 SFSpeechRecognizer.requestAuthorization { [weak self] status in
                     guard let target = self else { return }
                     target.queue.async { [target] in
+                        guard target.lifecycleGeneration == lifecycle else { return }
                         if status == .authorized { target.startAuthorized() }
                         else { target.fail("Speech Recognition permission was not granted; wake word remains off.") }
                     }
@@ -184,13 +188,23 @@ final class WakeWordController: @unchecked Sendable {
 
         // Apple's streaming tasks are finite. Rotate proactively while still
         // healthy instead of waiting for a terminal error with a listening gap.
+        scheduleRecognitionRotation(for: currentGeneration, after: 15)
+    }
+
+    private func scheduleRecognitionRotation(for recognitionGeneration: Int, after delay: TimeInterval) {
         let reset = DispatchWorkItem { [weak self] in
-            guard let self, self.generation == currentGeneration,
+            guard let self, self.generation == recognitionGeneration,
                   self.phase == .wake || self.phase == .conversation else { return }
+            if self.phase == .conversation, self.heardSpeech {
+                // Preserve an utterance that crosses Apple's proactive task
+                // boundary. Its endpoint/final result will rotate naturally.
+                self.scheduleRecognitionRotation(for: recognitionGeneration, after: 1)
+                return
+            }
             self.beginRecognition()
         }
         resetWork = reset
-        queue.asyncAfter(deadline: .now() + 15, execute: reset)
+        queue.asyncAfter(deadline: .now() + delay, execute: reset)
     }
 
     private func consume(_ transcript: String, isFinal: Bool) {
@@ -286,6 +300,7 @@ final class WakeWordController: @unchecked Sendable {
 
     private func stopLocked(releaseMic: Bool) {
         phase = .stopped
+        lifecycleGeneration &+= 1
         generation &+= 1
         endpointWork?.cancel(); endpointWork = nil
         idleWork?.cancel(); idleWork = nil

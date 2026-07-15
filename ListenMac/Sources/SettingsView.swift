@@ -151,6 +151,8 @@ struct SettingsView: View {
                 HStack {
                     Spacer()
                     MenuBarAppearancePreview(
+                        text: "Listen",
+                        fontSize: model.settings.menubar_text_size,
                         styleName: model.settings.menubar_color_style,
                         speed: model.settings.menubar_animation_speed,
                         intensity: model.settings.menubar_color_intensity,
@@ -188,7 +190,17 @@ struct SettingsView: View {
                         .monospacedDigit().foregroundStyle(.secondary).frame(width: 48)
                 }
             }
-            section("Text spacing") {
+            section("Text") {
+                HStack {
+                    Text("Listen size")
+                    Slider(
+                        value: $model.settings.menubar_text_size,
+                        in: StatusAppearance.idleTextSizeRange,
+                        step: 0.5
+                    )
+                    Text(String(format: "%.1f pt", model.settings.menubar_text_size))
+                        .monospacedDigit().foregroundStyle(.secondary).frame(width: 54)
+                }
                 HStack {
                     Text("Breathing room")
                     Slider(
@@ -215,6 +227,8 @@ struct SettingsView: View {
         } label: {
             VStack(alignment: .leading, spacing: 7) {
                 MenuBarAppearancePreview(
+                    text: "listening",
+                    fontSize: 12,
                     styleName: style.rawValue,
                     speed: model.settings.menubar_animation_speed,
                     intensity: model.settings.menubar_color_intensity,
@@ -403,6 +417,8 @@ struct SettingsView: View {
 }
 
 private struct MenuBarAppearancePreview: View {
+    let text: String
+    let fontSize: Double
     let styleName: String
     let speed: Double
     let intensity: Double
@@ -417,13 +433,13 @@ private struct MenuBarAppearancePreview: View {
                 phase: phase,
                 intensity: intensity
             ).map(Color.init(nsColor:))
-            Text("listening")
-                .font(.system(size: large ? 14 : 12, weight: .medium, design: .rounded))
+            Text(text)
+                .font(.system(size: CGFloat(fontSize), weight: .medium))
                 .foregroundStyle(LinearGradient(colors: colors, startPoint: .leading, endPoint: .trailing))
                 .padding(.horizontal, CGFloat(padding) / 2)
                 .padding(.vertical, large ? 7 : 5)
                 .background(.black.opacity(0.78), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         }
-        .accessibilityLabel("Animated \(StatusAppearance.style(named: styleName).title) preview")
+        .accessibilityLabel("Animated \(text) \(StatusAppearance.style(named: styleName).title) preview")
     }
 }

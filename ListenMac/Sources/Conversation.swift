@@ -39,8 +39,11 @@ enum RollingAudioPolicy {
     }
 
     static func shouldRoll(hasWriter: Bool, framesInChunk: UInt64,
-                           rate: Double, chunkSeconds: Double) -> Bool {
-        !hasWriter || framesInChunk >= frameLimit(rate: rate, chunkSeconds: chunkSeconds)
+                           rate: Double, chunkSeconds: Double,
+                           writerRate: Double? = nil) -> Bool {
+        !hasWriter
+            || writerRate.map { abs($0 - rate) >= 0.5 } == true
+            || framesInChunk >= frameLimit(rate: rate, chunkSeconds: chunkSeconds)
     }
 }
 
@@ -56,6 +59,7 @@ final class ConversationRecorder: @unchecked Sendable {
     private var sessionID = ""
     private var startedAt = Date()
     private var writer: M4AStreamWriter?
+    private var writerRate: Double?
     private var chunkURLs: [URL] = []
     private var framesInChunk: UInt64 = 0
     private var chunkSeconds: Double = 600
@@ -87,19 +91,20 @@ final class ConversationRecorder: @unchecked Sendable {
             chunkURLs = []
             framesInChunk = 0
             writer = nil
+            writerRate = nil
             accepting = true
+            writeManifestLocked(state: "recording", endedAt: nil)
         }
         let idForSink = audio.addSink { [weak self] samples, rate in
             guard let target = self else { return }
             target.queue.async { [target] in target.accept(samples: samples, rate: rate) }
         }
         sinkID = idForSink
-        writeManifest(state: "recording", endedAt: nil)
         NSLog("[Listen] conversation recording started: \(id)")
         return dir
     }
 
-    func stop() async -> ConversationDraft? {
+    func stop(manifestState: String = "processing") async -> ConversationDraft? {
         guard isRecording else { return nil }
         if let sinkID { audio.removeSink(sinkID) }
         self.sinkID = nil
@@ -108,14 +113,18 @@ final class ConversationRecorder: @unchecked Sendable {
                 accepting = false
                 writer?.close()
                 writer = nil
+                writerRate = nil
                 guard let directory else { return nil }
-                return ConversationDraft(id: sessionID, directory: directory,
-                                         startedAt: startedAt, endedAt: Date(), chunks: chunkURLs)
+                let draft = ConversationDraft(id: sessionID, directory: directory,
+                                              startedAt: startedAt, endedAt: Date(), chunks: chunkURLs)
+                // This write completes before stop returns, so AppKit's
+                // terminate-later reply cannot leave the session "recording".
+                writeManifestLocked(state: manifestState, endedAt: draft.endedAt)
+                return draft
             }
         }.value
         audio.release("conversation-recorder")
         if let result {
-            writeManifest(state: "processing", endedAt: result.endedAt)
             NSLog("[Listen] conversation recording stopped: \(result.id), \(result.chunks.count) chunks")
         }
         return result
@@ -124,30 +133,36 @@ final class ConversationRecorder: @unchecked Sendable {
     private func accept(samples: [Float], rate: Double) {
         guard accepting, !samples.isEmpty, let directory else { return }
         if RollingAudioPolicy.shouldRoll(hasWriter: writer != nil, framesInChunk: framesInChunk,
-                                         rate: rate, chunkSeconds: chunkSeconds) {
+                                         rate: rate, chunkSeconds: chunkSeconds,
+                                         writerRate: writerRate) {
             writer?.close()
             framesInChunk = 0
             let audioDir = directory.appendingPathComponent("audio", isDirectory: true)
             let url = audioDir.appendingPathComponent(String(format: "audio-%04d.m4a", chunkURLs.count + 1))
             writer = M4AStreamWriter(url: url)
+            writerRate = rate
             chunkURLs.append(url)
-            writeManifest(state: "recording", endedAt: nil)
+            writeManifestLocked(state: "recording", endedAt: nil)
         }
         writer?.append(samples: samples, rate: rate)
         framesInChunk &+= UInt64(samples.count)
     }
 
-    private func writeManifest(state: String, endedAt: Date?) {
-        queue.async { [self] in
-            guard let directory else { return }
-            let manifest = SessionManifest(id: sessionID, startedAt: startedAt, endedAt: endedAt,
-                                           state: state, chunks: chunkURLs.map(\.lastPathComponent))
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            encoder.dateEncodingStrategy = .iso8601
-            if let data = try? encoder.encode(manifest) {
-                try? data.write(to: directory.appendingPathComponent("manifest.json"), options: .atomic)
-            }
+    /// Must be called on `queue`; manifest order then matches audio-writer
+    /// order and stop can synchronously guarantee finalization.
+    private func writeManifestLocked(state: String, endedAt: Date?) {
+        guard let directory else { return }
+        let manifest = SessionManifest(id: sessionID, startedAt: startedAt, endedAt: endedAt,
+                                       state: state, chunks: chunkURLs.map(\.lastPathComponent))
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        do {
+            let data = try encoder.encode(manifest)
+            try data.write(to: directory.appendingPathComponent("manifest.json"), options: .atomic)
+        } catch {
+            listenLog("conversation manifest write failed id=\(sessionID) error=\(error.localizedDescription)")
+            NSLog("[Listen] conversation manifest write failed: \(error.localizedDescription)")
         }
     }
 }
@@ -193,6 +208,12 @@ struct ConversationReport: Codable, Identifiable, Sendable {
 }
 
 enum ConversationProcessor {
+    /// Provider calls may run concurrently, but report.json is one local
+    /// document. Merge each completed result under a short synchronous lock
+    /// so analyses and focus refreshes cannot overwrite one another with a
+    /// stale pre-network snapshot.
+    private static let reportMutationLock = NSLock()
+
     static func process(
         _ draft: ConversationDraft,
         stt: STTProvider,
@@ -353,7 +374,7 @@ enum ConversationProcessor {
         assistant: Interpreter,
         storageKey: String? = nil
     ) async throws -> URL {
-        var report = try load(in: directory)
+        let report = try load(in: directory)
         let source: String
         if scope == "all" {
             source = report.chapters.flatMap(\.segments).map { "[\(formatTime($0.start))] \($0.speaker): \($0.text)" }
@@ -369,11 +390,9 @@ enum ConversationProcessor {
         Perform an exacting deep analysis of this spoken exchange. Work at both word level and metaphysical level: diction, syntax, metaphor, framing, presuppositions, omissions, speech acts, power/agency, emotional subtext, epistemic posture, values, identity claims, contradictions, and what the language reveals. Quote only short phrases from the supplied exchange as evidence. Separate observation from inference, assign confidence to inference, and do not diagnose people or invent context. End with alternative interpretations and questions worth revisiting.\n\n{text}
         """
         let analysis = try await withTimeout(120) { try await assistant.interpret(source, prompt: prompt) }
-        report.analyses[storageKey ?? scope] = analysis
-        try save(report, in: directory)
-        let url = try render(report, in: directory)
-        hardenFiles(in: directory)
-        return url
+        return try mutateReport(in: directory) { latest in
+            latest.analyses[storageKey ?? scope] = analysis
+        }.url
     }
 
     static func refreshFocus(sessionID: String, assistant: Interpreter) async throws -> ConversationReport {
@@ -382,16 +401,15 @@ enum ConversationProcessor {
     }
 
     static func refreshFocus(directory: URL, assistant: Interpreter) async throws -> ConversationReport {
-        var report = try load(in: directory)
+        let report = try load(in: directory)
         let digest = report.chapters.enumerated().map {
             "CHAPTER \($0.offset + 1): \($0.element.title)\n\($0.element.summary)"
         }.joined(separator: "\n\n")
         let source = digest + "\n\nACTIONS AND DECISIONS\n" + report.actionsAndDecisions
-        report.focus = try await synthesizeFocus(source: source, assistant: assistant)
-        try save(report, in: directory)
-        _ = try render(report, in: directory)
-        hardenFiles(in: directory)
-        return report
+        let focus = try await synthesizeFocus(source: source, assistant: assistant)
+        return try mutateReport(in: directory) { latest in
+            latest.focus = focus
+        }.report
     }
 
     static func loadReport(sessionID: String) throws -> ConversationReport {
@@ -409,6 +427,34 @@ enum ConversationProcessor {
             .sorted { $0.startedAt > $1.startedAt }
     }
 
+    /// Sessions finalized during Quit (or interrupted while the report was
+    /// processing) are resumed on the next launch instead of remaining as
+    /// audio-only folders invisible to the native conversation library.
+    static func recoverableDrafts(root: URL = SessionStore.root) -> [ConversationDraft] {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let directories = try? FileManager.default.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
+        ) else { return [] }
+        return directories.compactMap { directory in
+            guard !FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent("report.json").path
+            ),
+            let data = try? Data(contentsOf: directory.appendingPathComponent("manifest.json")),
+            let manifest = try? decoder.decode(SessionManifest.self, from: data),
+            manifest.state == "saved" || manifest.state == "processing",
+            let endedAt = manifest.endedAt else { return nil }
+            let audioDirectory = directory.appendingPathComponent("audio", isDirectory: true)
+            let chunks = manifest.chunks.map { audioDirectory.appendingPathComponent($0) }
+                .filter { FileManager.default.fileExists(atPath: $0.path) }
+            guard !chunks.isEmpty else { return nil }
+            return ConversationDraft(
+                id: manifest.id, directory: directory, startedAt: manifest.startedAt,
+                endedAt: endedAt, chunks: chunks
+            )
+        }.sorted { $0.startedAt < $1.startedAt }
+    }
+
     static func fallbackFocus(for report: ConversationReport) -> ConversationFocus {
         localFocus(chapters: report.chapters, actionsAndDecisions: report.actionsAndDecisions)
     }
@@ -424,6 +470,20 @@ enum ConversationProcessor {
         let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
         return try decoder.decode(ConversationReport.self,
                                   from: Data(contentsOf: directory.appendingPathComponent("report.json")))
+    }
+
+    private static func mutateReport(
+        in directory: URL,
+        _ mutation: (inout ConversationReport) throws -> Void
+    ) throws -> (report: ConversationReport, url: URL) {
+        reportMutationLock.lock()
+        defer { reportMutationLock.unlock() }
+        var latest = try load(in: directory)
+        try mutation(&latest)
+        try save(latest, in: directory)
+        let url = try render(latest, in: directory)
+        hardenFiles(in: directory)
+        return (latest, url)
     }
 
     private static func synthesizeFocus(source: String, assistant: Interpreter) async throws -> ConversationFocus {
