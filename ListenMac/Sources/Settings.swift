@@ -15,6 +15,19 @@ struct AppSettings: Codable {
     var cleanup_enabled: Bool = false
     var use_paste: Bool = true                    // legacy Python-app field; Swift app always pastes
     var sound_enabled: Bool = false
+    var wake_word_enabled: Bool = false           // opt-in: only setting that requests Speech permission
+    var wake_word_phrase: String = "listen"
+    var wake_conversation_timeout: Double = 30
+    var tts_enabled: Bool = true
+    var tts_provider: String = "xai"              // xai | system
+    var xai_api_key: String = ""
+    var xai_voice_id: String = "o79hvd0m"         // migrated voice-daemon voice
+    var conversation_chunk_minutes: Int = 10
+    var menubar_color_style: String = StatusAppearance.defaultStyle
+    var menubar_animation_speed: Double = StatusAppearance.defaultSpeed
+    var menubar_color_intensity: Double = StatusAppearance.defaultIntensity
+    var menubar_text_padding: Double = StatusAppearance.defaultTextPadding
+    var menubar_text_size: Double = StatusAppearance.defaultIdleTextSize
 
     var elevenlabs_model: String = "scribe_v1"
     var openai_whisper_model: String = "whisper-1"
@@ -37,6 +50,10 @@ struct AppSettings: Codable {
         case openai_api_key, elevenlabs_api_key, openrouter_api_key, groq_api_key
         case stt_provider, interpreter_provider, hotkey
         case cleanup_enabled, use_paste, sound_enabled
+        case wake_word_enabled, wake_word_phrase, wake_conversation_timeout
+        case tts_enabled, tts_provider, xai_api_key, xai_voice_id, conversation_chunk_minutes
+        case menubar_color_style, menubar_animation_speed, menubar_color_intensity, menubar_text_padding
+        case menubar_text_size
         case elevenlabs_model, openai_whisper_model, openai_cleanup_model
         case openrouter_model, groq_stt_model, groq_model
         case cleanup_prompt
@@ -59,6 +76,19 @@ struct AppSettings: Codable {
         cleanup_enabled      = c.value(.cleanup_enabled, d.cleanup_enabled)
         use_paste            = c.value(.use_paste, d.use_paste)
         sound_enabled        = c.value(.sound_enabled, d.sound_enabled)
+        wake_word_enabled    = c.value(.wake_word_enabled, d.wake_word_enabled)
+        wake_word_phrase     = c.value(.wake_word_phrase, d.wake_word_phrase)
+        wake_conversation_timeout = c.value(.wake_conversation_timeout, d.wake_conversation_timeout)
+        tts_enabled          = c.value(.tts_enabled, d.tts_enabled)
+        tts_provider         = c.value(.tts_provider, d.tts_provider)
+        xai_api_key          = c.value(.xai_api_key, d.xai_api_key)
+        xai_voice_id         = c.value(.xai_voice_id, d.xai_voice_id)
+        conversation_chunk_minutes = c.value(.conversation_chunk_minutes, d.conversation_chunk_minutes)
+        menubar_color_style = c.value(.menubar_color_style, d.menubar_color_style)
+        menubar_animation_speed = c.value(.menubar_animation_speed, d.menubar_animation_speed)
+        menubar_color_intensity = c.value(.menubar_color_intensity, d.menubar_color_intensity)
+        menubar_text_padding = c.value(.menubar_text_padding, d.menubar_text_padding)
+        menubar_text_size = c.value(.menubar_text_size, d.menubar_text_size)
         elevenlabs_model     = c.value(.elevenlabs_model, d.elevenlabs_model)
         openai_whisper_model = c.value(.openai_whisper_model, d.openai_whisper_model)
         openai_cleanup_model = c.value(.openai_cleanup_model, d.openai_cleanup_model)
@@ -81,11 +111,16 @@ enum SettingsStore {
         let dir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".listen", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
         return dir.appendingPathComponent("config.json")
     }
 
     static func load() -> AppSettings {
-        guard let data = try? Data(contentsOf: url),
+        let fileURL = url
+        if FileManager.default.fileExists(atPath: fileURL.path) {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+        }
+        guard let data = try? Data(contentsOf: fileURL),
               let s = try? JSONDecoder().decode(AppSettings.self, from: data) else {
             return AppSettings()
         }
@@ -97,6 +132,7 @@ enum SettingsStore {
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let data = try? enc.encode(settings) {
             try? data.write(to: url, options: .atomic)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         }
     }
 }

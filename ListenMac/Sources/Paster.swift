@@ -1,6 +1,7 @@
 import AppKit
 import Carbon.HIToolbox
 
+@MainActor
 enum Paster {
     /// Compiled once — NSAppleScript(source:) re-compiles on every call
     /// otherwise, which costs tens of ms per paste. Main-thread only.

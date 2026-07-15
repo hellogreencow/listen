@@ -55,10 +55,14 @@ mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
 SDK=$(xcrun --show-sdk-path --sdk macosx)
 swiftc \
   -O \
+  -swift-version 6 \
+  -warnings-as-errors \
   -target arm64-apple-macos13.0 \
   -sdk "$SDK" \
   -framework AppKit \
   -framework AVFoundation \
+  -framework Speech \
+  -framework CoreAudio \
   -framework SwiftUI \
   -framework Carbon \
   -framework IOKit \
