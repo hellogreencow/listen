@@ -370,7 +370,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func configureQuickChat() {
         quickChat = QuickChatController(
             backend: settings.chat_backend == "hermes" ? .hermes : .fast,
-            speakReply: settings.chat_speak_reply && settings.tts_enabled,
+            speakReply: settings.chat_speak_reply,
             saveNotes: settings.chat_save_notes,
             anchorFrame: { [weak self] in self?.statusButtonFrame() },
             respond: { [weak self] text, history, backend in
@@ -418,9 +418,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func chatResponse(_ text: String, history: [ChatMessage], backend: QuickChatBackend) async -> String {
-        // Retrieval stays off the main actor so a large lifetime ledger never
-        // stalls the panel or the menubar animation while a reply is pending.
-        let queryContext = history.map(\.text).joined(separator: " ")
+        // Retrieval stays off the main actor. Query the CURRENT user message,
+        // not the whole transcript — long conversations otherwise query the
+        // opening words and every "it/that" collapses into follow-up mode.
+        let queryContext = text
         let memory = await Task.detached(priority: .userInitiated) {
             NoteStore.shared.retrieve(for: queryContext)
         }.value

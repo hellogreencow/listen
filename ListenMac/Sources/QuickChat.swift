@@ -281,6 +281,12 @@ final class QuickChatController: ObservableObject {
         onNotes()
     }
 
+    /// Persist backend/speak/save immediately when any of them changes, so a
+    /// force-quit or crash can't silently discard gear edits made since launch.
+    func persistConfig() {
+        onConfigChanged(backend, speakReply, saveNotes)
+    }
+
     func quit() {
         persistUnsavedMessages()
         onConfigChanged(backend, speakReply, saveNotes)
@@ -355,7 +361,9 @@ final class QuickChatController: ObservableObject {
 private final class ChatPanel: NSPanel {
     var onCancel: (() -> Void)?
     override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
+    // canBecomeMain intentionally left at the default false: a borderless
+    // popover must NOT become main, or it swaps the menu bar to Listen's
+    // (empty) app menu while the chat is open.
     override func cancelOperation(_ sender: Any?) { onCancel?() }
 }
 
@@ -402,6 +410,9 @@ struct QuickChatView: View {
         .contentShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
         .onAppear { focusComposer() }
         .onChange(of: model.focusRequest) { _ in focusComposer() }
+        .onChange(of: model.backend) { _ in model.persistConfig() }
+        .onChange(of: model.speakReply) { _ in model.persistConfig() }
+        .onChange(of: model.saveNotes) { _ in model.persistConfig() }
         .onExitCommand { model.dismiss() }
     }
 
