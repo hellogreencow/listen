@@ -118,16 +118,28 @@ final class QuickChatController: ObservableObject {
     }
 
     func toggle() {
-        isVisible ? dismiss() : present()
+        if isVisible {
+            listenLog("quick chat toggle -> dismiss visible=\(isVisible)")
+            dismiss()
+        } else {
+            listenLog("quick chat toggle -> present")
+            present()
+        }
     }
 
     func present() {
+        // Never let a duplicate present stack a second panel or re-order a
+        // visible one — the "two panels" failure mode came from transparent
+        // glassEffect doubling, but keep this guard anyway.
+        guard panel == nil || !isVisible else { return }
         if panel == nil {
             let view = QuickChatView(model: self)
             let hosting = NSHostingController(rootView: view)
             let panel = ChatPanel(
                 contentRect: NSRect(x: 0, y: 0, width: 380, height: 500),
-                styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
+                // Not .nonactivatingPanel: the chat must accept keystrokes, so it
+                // has to be able to become key (see ChatPanel.canBecomeKey).
+                styleMask: [.borderless, .fullSizeContentView],
                 backing: .buffered, defer: false
             )
             panel.contentViewController = hosting
@@ -160,6 +172,7 @@ final class QuickChatController: ObservableObject {
         panel.orderFrontRegardless()
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
+        listenLog("quick chat present visible=\(panel.isVisible)")
     }
 
     func dismiss() {
@@ -238,8 +251,10 @@ struct QuickChatView: View {
     @ViewBuilder
     private var glassBackground: some View {
         if #available(macOS 26.0, *) {
+            // Real backdrop first — glass samples the frosted material instead
+            // of a transparent hole, which is what caused the doubled render.
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(.clear)
+                .fill(.ultraThinMaterial)
                 .glassEffect()
                 .glassEffectID("listen.chat", in: glassNamespace)
         } else {

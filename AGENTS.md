@@ -380,10 +380,14 @@ Cmd+Shift+Space) and a Liquid Glass chat panel grows out of the icon.
 - **Multi-turn.** The panel keeps a running transcript; each turn sends the recent
   context + local graph-RAG memory via `ChatPromptBuilder`. On dismiss the whole
   convo collapses to one `VoiceNote(kind: .quickChat)` if "Save to notes" is on.
-- **Liquid Glass is macOS 26+ only.** The build targets macOS 13, so every glass
-  call (`glassEffect()`, `glassEffectID(_:in:)`) must sit under
-  `if #available(macOS 26.0, *)` with a `.regularMaterial` fallback. The panel is
-  a borderless keyable `NSPanel` (`canBecomeKey`/`canBecomeMain` overridden).
+- **Liquid Glass is macOS 26+ only, and MUST have a real backdrop.** The build
+  targets macOS 13, so every glass call (`glassEffect()`, `glassEffectID(_:in:)`)
+  sits under `if #available(macOS 26.0, *)` with a `.regularMaterial` fallback.
+  Use `.fill(.ultraThinMaterial)` UNDER the `glassEffect()` — applying
+  `glassEffect()` to `.fill(.clear)` in a transparent borderless window renders a
+  doubled/ghosted "two panels" overlay with no blur. The panel is a borderless
+  `NSPanel` with `canBecomeKey`/`canBecomeMain` overridden and is deliberately
+  NOT `.nonactivatingPanel` (typing needs a key window).
 - **Code lives in `ListenMac/Sources/QuickChat.swift`.** Do not regress the
   dictation path; the chat never touches the mic or the paste flow.
 

@@ -309,7 +309,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func buildMenu() -> NSMenu {
         let menu = NSMenu()
-        let quickChat = NSMenuItem(title: "Quick Chat", action: #selector(toggleQuickChat), keyEquivalent: " ")
+        let quickChat = NSMenuItem(title: "Quick Chat", action: #selector(toggleQuickChat), keyEquivalent: "")
         quickChat.target = self; menu.addItem(quickChat)
         menu.addItem(.separator())
         let prefs = NSMenuItem(title: "Preferences…", action: #selector(showPrefs), keyEquivalent: ",")
