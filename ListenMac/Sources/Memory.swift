@@ -4,6 +4,7 @@ enum VoiceNoteKind: String, Codable, CaseIterable, Sendable {
     case quickThought = "Quick Thought"
     case wakeConversation = "Wake Conversation"
     case recordedConversation = "Recorded Conversation"
+    case quickChat = "Quick Chat"
 }
 
 struct VoiceNote: Codable, Identifiable, Sendable {

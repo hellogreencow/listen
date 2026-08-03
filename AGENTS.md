@@ -339,9 +339,10 @@ Common error codes you'll see in `/tmp/listen-paste.log`:
   temporary messages through `transientMessage`, never raw title mutation. The
   item reserves the larger measured width of idle and active labels at all
   times. Idle "Listen" uses an adjustable medium-weight font (12–15 pt, 14 pt
-  default); active "listening" stays condensed so the mic can start without a
-  width change. Widening the slot can cause macOS to hide Listen when its
-  microphone privacy item enters a crowded notched menu bar.
+  default); active "listening" uses that same face so only the word and color
+  change. Width still reserves the wider of the two measured strings. Widening
+  the slot further can cause macOS to hide Listen when its microphone privacy
+  item enters a crowded notched menu bar.
   `Listen_Status_v1` is also a compatibility identity: seed its preferred
   position to ordinal zero *before* creating the `NSStatusItem`, then assign it
   as `autosaveName`. This keeps Listen beside the Control Center end when the
@@ -357,6 +358,34 @@ Common error codes you'll see in `/tmp/listen-paste.log`:
   private. Record engine acquire/close, capture boundaries, wake status, report
   completion, and failures there. GUI automation app lists have returned stale
   running state; verify deployments with the real PID/start time and this log.
+
+## Quick Chat (Liquid Glass typed assistant)
+
+The typed sibling of Quick Thought — click the Listen status item (or
+Cmd+Shift+Space) and a Liquid Glass chat panel grows out of the icon.
+
+- **Left-click on the status item opens the chat island.** The classic menu stays
+  assigned as `statusItem.menu` so AppKit shows it on right-click automatically,
+  and every menu action is also reachable from the chat's gear. Do not call the
+  deprecated `statusItem.popUpMenu(_:)` — it fails `-warnings-as-errors`.
+- **The open shortcut is Carbon `RegisterEventHotKey` (Cmd+Shift+Space), NOT an
+  NSEvent global monitor.** Carbon needs no Accessibility/Input Monitoring grant.
+  The class is `@unchecked Sendable` with a `@MainActor` trigger property so the
+  C callback can hop to the main actor under strict Swift 6.
+- **Two backends.** `fast` (default) = the same direct `assistant` LLM as Quick
+  Thought, memories retrieved locally — sub-second. `hermes` = the whole
+  conversation passed to `HermesInterpreter.interpret` for full profile/memory/
+  persona (slower). Toggle + speak + save live in the gear; persisted to
+  `chat_backend` / `chat_speak_reply` / `chat_save_notes` in config on dismiss.
+- **Multi-turn.** The panel keeps a running transcript; each turn sends the recent
+  context + local graph-RAG memory via `ChatPromptBuilder`. On dismiss the whole
+  convo collapses to one `VoiceNote(kind: .quickChat)` if "Save to notes" is on.
+- **Liquid Glass is macOS 26+ only.** The build targets macOS 13, so every glass
+  call (`glassEffect()`, `glassEffectID(_:in:)`) must sit under
+  `if #available(macOS 26.0, *)` with a `.regularMaterial` fallback. The panel is
+  a borderless keyable `NSPanel` (`canBecomeKey`/`canBecomeMain` overridden).
+- **Code lives in `ListenMac/Sources/QuickChat.swift`.** Do not regress the
+  dictation path; the chat never touches the mic or the paste flow.
 
 - **Build and stress gates are strict Swift 6.** `build.sh` treats warnings as
   errors. Run `ListenMac/Tests/run-stress-tests.sh`, `git diff --check`, plist

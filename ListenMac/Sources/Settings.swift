@@ -29,6 +29,10 @@ struct AppSettings: Codable {
     var menubar_text_padding: Double = StatusAppearance.defaultTextPadding
     var menubar_text_size: Double = StatusAppearance.defaultIdleTextSize
 
+    var chat_backend: String = "fast"                // fast | hermes (Quick Chat)
+    var chat_speak_reply: Bool = true
+    var chat_save_notes: Bool = true
+
     var elevenlabs_model: String = "scribe_v1"
     var openai_whisper_model: String = "whisper-1"
     var openai_cleanup_model: String = "gpt-4o-mini"
@@ -54,6 +58,7 @@ struct AppSettings: Codable {
         case tts_enabled, tts_provider, xai_api_key, xai_voice_id, conversation_chunk_minutes
         case menubar_color_style, menubar_animation_speed, menubar_color_intensity, menubar_text_padding
         case menubar_text_size
+        case chat_backend, chat_speak_reply, chat_save_notes
         case elevenlabs_model, openai_whisper_model, openai_cleanup_model
         case openrouter_model, groq_stt_model, groq_model
         case cleanup_prompt
@@ -89,6 +94,9 @@ struct AppSettings: Codable {
         menubar_color_intensity = c.value(.menubar_color_intensity, d.menubar_color_intensity)
         menubar_text_padding = c.value(.menubar_text_padding, d.menubar_text_padding)
         menubar_text_size = c.value(.menubar_text_size, d.menubar_text_size)
+        chat_backend         = c.value(.chat_backend, d.chat_backend)
+        chat_speak_reply     = c.value(.chat_speak_reply, d.chat_speak_reply)
+        chat_save_notes      = c.value(.chat_save_notes, d.chat_save_notes)
         elevenlabs_model     = c.value(.elevenlabs_model, d.elevenlabs_model)
         openai_whisper_model = c.value(.openai_whisper_model, d.openai_whisper_model)
         openai_cleanup_model = c.value(.openai_cleanup_model, d.openai_cleanup_model)

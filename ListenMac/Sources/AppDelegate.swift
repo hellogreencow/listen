@@ -15,6 +15,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let wakeWord = WakeWordController()
     private let speaker = SpeechSpeaker()
     private let responsePresenter = VoiceResponsePresenter()
+    private let quickChatShortcut = QuickChatShortcut()
+    private var quickChat: QuickChatController!
     private var settings = SettingsStore.load()
     private var stt: STTProvider?
     private var interpreter: Interpreter?
@@ -51,15 +53,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private static let maxRecordingSeconds: Double = 180
     private static let minRecordingSeconds: Double = 0.3
-    /// The active word stays compact enough to survive macOS's microphone
-    /// privacy item on notched screens. Idle "Listen" is deliberately larger
-    /// so it fills that same fixed slot instead of looking over-padded.
-    private static let activeStatusFont: NSFont = {
-        let base = NSFont.menuBarFont(ofSize: 12)
-        let descriptor = base.fontDescriptor.withSymbolicTraits(.condensed)
-        return NSFont(descriptor: descriptor, size: base.pointSize) ?? base
-    }()
-    private var idleStatusFont: NSFont {
+    /// Same face for idle "Listen" and active "listening" so the label only
+    /// changes color/word, not weight or size. Width still reserves the wider
+    /// of the two measured strings so the slot does not jump.
+    private var statusFont: NSFont {
         NSFont.systemFont(
             ofSize: StatusAppearance.idleTextSize(settings.menubar_text_size),
             weight: .medium
@@ -82,6 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         buildStatusItem()
         reloadProviders()
         speaker.configure(settings)
+        configureQuickChat()
         configureWakeCallbacks()
         startHotkey()
         ensurePermissionsOnFirstRun()
@@ -211,6 +209,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         listenLog("status item preferred_position=\(defaults.double(forKey: Self.statusPreferredPositionKey)) width=\(Int(statusItemWidth))")
         renderStatus()
         statusItem.menu = buildMenu()
+        // Left-click opens the Quick Chat island. The classic menu stays
+        // assigned so AppKit shows it on right-click automatically, and it
+        // remains reachable from the chat's gear (and the "Quick Chat" item).
+        statusItem.button?.target = self
+        statusItem.button?.action = #selector(statusItemClicked)
     }
 
     private var isVisuallyActive: Bool {
@@ -218,11 +221,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var statusItemWidth: CGFloat {
-        StatusAppearance.itemLength(
+        let font = statusFont
+        return StatusAppearance.itemLength(
             idleText: "Listen",
-            idleFont: idleStatusFont,
+            idleFont: font,
             activeText: "listening",
-            activeFont: Self.activeStatusFont,
+            activeFont: font,
             padding: settings.menubar_text_padding
         )
     }
@@ -272,7 +276,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.isVisible = true
         statusItem.length = statusItemWidth
         let text = statusText()
-        let font = isMicrophoneActiveForStatus ? Self.activeStatusFont : idleStatusFont
+        let font = statusFont
         if isVisuallyActive {
             animationPhase = (animationPhase + 0.014 * StatusAppearance.speed(settings.menubar_animation_speed))
                 .truncatingRemainder(dividingBy: 1)
@@ -305,6 +309,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func buildMenu() -> NSMenu {
         let menu = NSMenu()
+        let quickChat = NSMenuItem(title: "Quick Chat", action: #selector(toggleQuickChat), keyEquivalent: " ")
+        quickChat.target = self; menu.addItem(quickChat)
+        menu.addItem(.separator())
         let prefs = NSMenuItem(title: "Preferences…", action: #selector(showPrefs), keyEquivalent: ",")
         prefs.target = self; menu.addItem(prefs)
         let conversations = NSMenuItem(
@@ -357,6 +364,97 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         catch { interpreter = nil; NSLog("[Listen] cleanup init failed: \(error.localizedDescription)") }
         do { assistant = try ProviderFactory.assistant(settings) }
         catch { assistant = nil; NSLog("[Listen] assistant init failed: \(error.localizedDescription)") }
+    }
+
+    // MARK: - Quick Chat (liquid glass typed assistant)
+
+    private func configureQuickChat() {
+        quickChat = QuickChatController(
+            backend: settings.chat_backend == "hermes" ? .hermes : .fast,
+            speakReply: settings.chat_speak_reply && settings.tts_enabled,
+            saveNotes: settings.chat_save_notes,
+            anchorFrame: { [weak self] in self?.statusButtonFrame() },
+            respond: { [weak self] text, history, backend in
+                guard let self else { return "" }
+                return await self.chatResponse(text, history: history, backend: backend)
+            },
+            onSpeak: { [weak self] answer in
+                guard let self else { return }
+                self.speaker.speak(answer, enabled: self.settings.tts_enabled)
+            },
+            onPersist: { [weak self] messages in
+                guard let self else { return }
+                await self.persistChat(messages)
+            },
+            onPreferences: { [weak self] in self?.showPrefs() },
+            onNotes: { [weak self] in self?.showNotes() },
+            onQuit: { NSApp.terminate(nil) },
+            onConfigChanged: { [weak self] backend, speak, save in
+                guard let self else { return }
+                self.settings.chat_backend = backend.rawValue
+                self.settings.chat_speak_reply = speak
+                self.settings.chat_save_notes = save
+                SettingsStore.save(self.settings)
+            }
+        )
+        quickChatShortcut.onTrigger = { [weak self] in self?.toggleQuickChat() }
+        quickChatShortcut.install()
+        listenLog("quick chat configured backend=\(settings.chat_backend)")
+    }
+
+    @objc private func statusItemClicked() {
+        quickChat.toggle()
+    }
+
+    @objc private func toggleQuickChat() {
+        quickChat.toggle()
+    }
+
+    private func statusButtonFrame() -> CGRect? {
+        guard let button = statusItem?.button, let window = button.window else { return nil }
+        return window.convertToScreen(button.frame)
+    }
+
+    private func chatResponse(_ text: String, history: [ChatMessage], backend: QuickChatBackend) async -> String {
+        // Retrieval stays off the main actor so a large lifetime ledger never
+        // stalls the panel or the menubar animation while a reply is pending.
+        let queryContext = history.map(\.text).joined(separator: " ")
+        let memory = await Task.detached(priority: .userInitiated) {
+            NoteStore.shared.retrieve(for: queryContext)
+        }.value
+        let prompt = ChatPromptBuilder.make(messages: history, memory: memory)
+        switch backend {
+        case .fast:
+            guard let assistant else {
+                return "Configure an assistant provider in Preferences to get replies."
+            }
+            do { return try await withTimeout(20) { try await assistant.interpret("", prompt: prompt) } }
+            catch {
+                listenLog("quick chat fast failed error=\(error.localizedDescription)")
+                return "I couldn't get a reply right now: \(error.localizedDescription)"
+            }
+        case .hermes:
+            guard HermesInterpreter.isAvailable else {
+                return "Hermes isn't installed on this Mac. Use Fast mode or install the hermes CLI."
+            }
+            do { return try await HermesInterpreter().interpret("", prompt: prompt) }
+            catch {
+                listenLog("quick chat hermes failed error=\(error.localizedDescription)")
+                return "Hermes failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func persistChat(_ messages: [ChatMessage]) async {
+        let userText = messages.filter { $0.role == .user }.map(\.text).joined(separator: "\n")
+        let replyText = messages.filter { $0.role == .assistant }.map(\.text).joined(separator: "\n")
+        guard !userText.isEmpty, !replyText.isEmpty else { return }
+        do {
+            try await NoteStore.shared.append(VoiceNote(kind: .quickChat, thought: userText, response: replyText))
+            listenLog("quick chat persisted messages=\(messages.count)")
+        } catch {
+            listenLog("quick chat persist failed error=\(error.localizedDescription)")
+        }
     }
 
     private func startHotkey() {
