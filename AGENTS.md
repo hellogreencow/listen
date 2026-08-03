@@ -390,10 +390,19 @@ Glass chat panel grows out of the icon.
   in the superview's coordinates; never pass it directly to
   `window.convertToScreen`. Use `button.convert(button.bounds, to: nil)` first,
   choose the `NSScreen` intersecting that anchor (not `NSScreen.main`), then clamp
-  the entire 380×500 final frame inside that screen's `visibleFrame`. The open/
+  the entire 408×536 final frame inside that screen's `visibleFrame`. The open/
   close morph animates the real `NSPanel` frame between the status-pill seed and
   full panel. Keep the presentation-generation guard: otherwise a rapid reopen
   can be hidden by the previous dismiss animation's completion callback.
+- **Persistence is incremental, not whole-conversation.** Each dismiss persists
+  only messages not yet saved (`scheduledPersistedCount`), never the entire
+  transcript — the old whole-transcript write duplicated every prior note on
+  every close. An in-flight turn's trailing user message is held back until the
+  assistant reply arrives so a pair is never split across two notes, and a reply
+  that completes after the panel closed persists immediately. Conversation
+  context sent to the model is bounded (`ChatPromptBuilder.boundedMessages`),
+  and the root view is responsive (`maxWidth/maxHeight: .infinity`) so a clamped
+  smaller window can't clip its content.
 - **Code lives in `ListenMac/Sources/QuickChat.swift`.** Do not regress the
   dictation path; the chat never touches the mic or the paste flow.
 

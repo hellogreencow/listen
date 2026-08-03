@@ -382,8 +382,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.speaker.speak(answer, enabled: self.settings.tts_enabled)
             },
             onPersist: { [weak self] messages in
-                guard let self else { return }
-                await self.persistChat(messages)
+                guard let self else { return false }
+                return await self.persistChat(messages)
             },
             onPreferences: { [weak self] in self?.showPrefs() },
             onNotes: { [weak self] in self?.showNotes() },
@@ -447,15 +447,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func persistChat(_ messages: [ChatMessage]) async {
+    private func persistChat(_ messages: [ChatMessage]) async -> Bool {
         let userText = messages.filter { $0.role == .user }.map(\.text).joined(separator: "\n")
         let replyText = messages.filter { $0.role == .assistant }.map(\.text).joined(separator: "\n")
-        guard !userText.isEmpty, !replyText.isEmpty else { return }
+        guard !userText.isEmpty else { return true }
         do {
             try await NoteStore.shared.append(VoiceNote(kind: .quickChat, thought: userText, response: replyText))
             listenLog("quick chat persisted messages=\(messages.count)")
+            return true
         } catch {
             listenLog("quick chat persist failed error=\(error.localizedDescription)")
+            return false
         }
     }
 
