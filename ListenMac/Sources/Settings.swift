@@ -30,7 +30,7 @@ struct AppSettings: Codable {
     var menubar_text_size: Double = StatusAppearance.defaultIdleTextSize
 
     var chat_backend: String = "fast"                // fast | hermes (Quick Chat)
-    var chat_speak_reply: Bool = true
+    var chat_speak_reply: Bool = false
     var chat_save_notes: Bool = true
 
     var elevenlabs_model: String = "scribe_v1"

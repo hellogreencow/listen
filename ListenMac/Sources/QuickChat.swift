@@ -191,6 +191,7 @@ final class QuickChatController: ObservableObject {
     }
 
     func dismiss() {
+        guard desiredVisible else { return }
         desiredVisible = false
         presentationGeneration &+= 1
         let generation = presentationGeneration
@@ -304,6 +305,7 @@ final class QuickChatController: ObservableObject {
         )
         panel.contentViewController = hosting
         panel.onCancel = { [weak self] in self?.dismiss() }
+        panel.onLostFocus = { [weak self] in self?.dismiss() }
         panel.isFloatingPanel = true
         panel.level = .floating
         panel.backgroundColor = .clear
@@ -360,11 +362,18 @@ final class QuickChatController: ObservableObject {
 
 private final class ChatPanel: NSPanel {
     var onCancel: (() -> Void)?
+    var onLostFocus: (() -> Void)?
     override var canBecomeKey: Bool { true }
     // canBecomeMain intentionally left at the default false: a borderless
     // popover must NOT become main, or it swaps the menu bar to Listen's
     // (empty) app menu while the chat is open.
     override func cancelOperation(_ sender: Any?) { onCancel?() }
+    // Close when the user clicks outside: resigning key means focus left the
+    // panel, so treat it as a dismiss. The controller guards re-entrancy.
+    override func resignKey() {
+        super.resignKey()
+        onLostFocus?()
+    }
 }
 
 // MARK: - View
@@ -423,7 +432,7 @@ struct QuickChatView: View {
                 .fill(.ultraThinMaterial)
                 .overlay {
                     LinearGradient(
-                        colors: [Color.accentColor.opacity(0.06), .clear, Color.black.opacity(0.035)],
+                        colors: [Color.white.opacity(0.10), .clear, Color.black.opacity(0.035)],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     )
@@ -492,7 +501,7 @@ struct QuickChatView: View {
         VStack(spacing: 0) {
             Spacer(minLength: 16)
             listenOrb(size: 58)
-                .shadow(color: Color.accentColor.opacity(0.22), radius: 22)
+                .shadow(color: .black.opacity(0.18), radius: 22)
             Text("What’s on your mind?")
                 .font(.system(size: 20, weight: .semibold, design: .rounded))
                 .padding(.top, 17)
@@ -570,14 +579,10 @@ struct QuickChatView: View {
                     .textSelection(.enabled)
                     .padding(.horizontal, 13)
                     .padding(.vertical, 9)
-                    .background(
-                        LinearGradient(
-                            colors: [Color.accentColor.opacity(0.20), Color.accentColor.opacity(0.11)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        in: RoundedRectangle(cornerRadius: 15, style: .continuous)
-                    )
+                    .background {
+                        RoundedRectangle(cornerRadius: 15, style: .continuous)
+                            .fill(Color(nsColor: .labelColor).opacity(0.07))
+                    }
             }
         } else {
             HStack(alignment: .top, spacing: 10) {
@@ -655,7 +660,7 @@ struct QuickChatView: View {
             .font(.system(size: 11, weight: .bold))
             .foregroundStyle(enabled ? Color.white : Color.secondary)
             .frame(width: 28, height: 28)
-            .background { Circle().fill(enabled ? Color.accentColor : disabledSendColor) }
+            .background { Circle().fill(enabled ? Color(nsColor: .labelColor) : disabledSendColor) }
     }
 
     private var composerFooter: some View {
@@ -698,30 +703,26 @@ struct QuickChatView: View {
     private func listenOrb(size: CGFloat) -> some View {
         ZStack {
             Circle().fill(
-                AngularGradient(
-                    colors: [
-                        Color(red: 0.30, green: 0.58, blue: 1.0),
-                        Color(red: 0.67, green: 0.35, blue: 1.0),
-                        Color(red: 0.18, green: 0.86, blue: 0.82),
-                        Color(red: 0.30, green: 0.58, blue: 1.0),
-                    ],
-                    center: .center
+                LinearGradient(
+                    colors: [Color(white: 0.26), Color(white: 0.06)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
                 )
             )
             Circle().fill(
                 RadialGradient(
-                    colors: [Color.white.opacity(0.65), .clear],
+                    colors: [Color.white.opacity(0.35), .clear],
                     center: .topLeading,
                     startRadius: 0,
-                    endRadius: size * 0.72
+                    endRadius: size * 0.7
                 )
             )
             Image(systemName: "waveform")
                 .font(.system(size: size * 0.36, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.94))
+                .foregroundStyle(.white.opacity(0.96))
         }
         .frame(width: size, height: size)
-        .overlay { Circle().strokeBorder(.white.opacity(0.24), lineWidth: 0.6) }
+        .overlay { Circle().strokeBorder(.white.opacity(0.22), lineWidth: 0.6) }
     }
 
     private func iconButton(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
