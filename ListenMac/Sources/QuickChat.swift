@@ -87,6 +87,7 @@ final class QuickChatController: ObservableObject {
     private var panel: ChatPanel?
     private var host: NSHostingController<QuickChatView>?
     private var sendTasks = Set<Task<Void, Never>>()
+    private var presentationGeneration = 0
 
     var isVisible: Bool { panel?.isVisible ?? false }
 
@@ -127,6 +128,7 @@ final class QuickChatController: ObservableObject {
     }
 
     func present() {
+        presentationGeneration &+= 1
         // Never let a duplicate present stack a second panel or re-order a
         // visible one — the "two panels" failure mode came from transparent
         // glassEffect doubling, but keep this guard anyway.
@@ -156,31 +158,97 @@ final class QuickChatController: ObservableObject {
         }
         guard let panel else { return }
 
-        let size = panel.frame.size
-        var origin: CGPoint
-        if let anchor = anchorFrame(), let screen = NSScreen.main?.visibleFrame {
-            origin = CGPoint(x: anchor.maxX - size.width, y: anchor.minY - size.height - 6)
-            origin.x = min(max(origin.x, screen.minX + 8), screen.maxX - size.width - 8)
-            if origin.y < screen.minY { origin.y = screen.minY + 8 }
-        } else if let screen = NSScreen.main?.visibleFrame {
-            origin = CGPoint(x: screen.maxX - size.width - 12, y: screen.maxY - size.height - 12)
+        let finalSize = NSSize(width: 380, height: 500)
+        let anchor = anchorFrame()
+        let screen = anchor.flatMap(Self.screen(containing:)) ?? NSScreen.main ?? NSScreen.screens.first
+        guard let screen else { return }
+        let visible = screen.visibleFrame.insetBy(dx: 10, dy: 10)
+
+        // Align the panel's top-right edge with the status item, then clamp the
+        // entire final frame inside the SAME display as the menubar icon.
+        var finalOrigin = CGPoint(
+            x: (anchor?.maxX ?? visible.maxX) - finalSize.width,
+            y: (anchor?.minY ?? visible.maxY) - finalSize.height - 6
+        )
+        finalOrigin.x = min(max(finalOrigin.x, visible.minX), visible.maxX - finalSize.width)
+        finalOrigin.y = min(max(finalOrigin.y, visible.minY), visible.maxY - finalSize.height)
+        let finalFrame = NSRect(origin: finalOrigin, size: finalSize)
+
+        if let anchor {
+            // Start as the status-item pill itself, then expand down and left.
+            // A non-zero minimum avoids AppKit briefly dropping the window while
+            // animating a nearly-zero rect.
+            let seedWidth = max(54, anchor.width)
+            let seedHeight = max(24, anchor.height)
+            let seedFrame = NSRect(
+                x: min(max(anchor.midX - seedWidth / 2, visible.minX), visible.maxX - seedWidth),
+                y: min(max(anchor.minY - seedHeight, visible.minY), visible.maxY - seedHeight),
+                width: seedWidth,
+                height: seedHeight
+            )
+            panel.alphaValue = 0.25
+            panel.setFrame(seedFrame, display: false)
+            panel.orderFrontRegardless()
+            NSApp.activate(ignoringOtherApps: true)
+            panel.makeKey()
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.24
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                panel.animator().alphaValue = 1
+                panel.animator().setFrame(finalFrame, display: true)
+            } completionHandler: {
+                Task { @MainActor in panel.makeKeyAndOrderFront(nil) }
+            }
         } else {
-            origin = .zero
+            panel.setFrame(finalFrame, display: true)
+            panel.alphaValue = 1
+            panel.makeKeyAndOrderFront(nil)
         }
-        panel.setFrameOrigin(origin)
-        panel.orderFrontRegardless()
-        NSApp.activate(ignoringOtherApps: true)
-        panel.makeKeyAndOrderFront(nil)
-        listenLog("quick chat present visible=\(panel.isVisible)")
+        listenLog("quick chat present visible=\(panel.isVisible) frame=\(NSStringFromRect(finalFrame)) screen=\(NSStringFromRect(screen.visibleFrame))")
     }
 
     func dismiss() {
         guard let panel else { return }
-        panel.orderOut(nil)
+        presentationGeneration &+= 1
+        let generation = presentationGeneration
+        let anchor = anchorFrame()
+        let screen = anchor.flatMap(Self.screen(containing:)) ?? panel.screen
+        if let anchor, let screen {
+            let visible = screen.visibleFrame.insetBy(dx: 10, dy: 10)
+            let seedWidth = max(54, anchor.width)
+            let seedHeight = max(24, anchor.height)
+            let seedFrame = NSRect(
+                x: min(max(anchor.midX - seedWidth / 2, visible.minX), visible.maxX - seedWidth),
+                y: min(max(anchor.minY - seedHeight, visible.minY), visible.maxY - seedHeight),
+                width: seedWidth,
+                height: seedHeight
+            )
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.16
+                context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                panel.animator().alphaValue = 0.2
+                panel.animator().setFrame(seedFrame, display: true)
+            } completionHandler: { [weak self] in
+                Task { @MainActor in
+                    guard let self, self.presentationGeneration == generation else { return }
+                    panel.orderOut(nil)
+                    panel.alphaValue = 1
+                }
+            }
+        } else {
+            panel.orderOut(nil)
+        }
         onConfigChanged(backend, speakReply, saveNotes)
         if saveNotes, !messages.isEmpty {
             let snapshot = messages
             Task { @MainActor in await onPersist(snapshot) }
+        }
+    }
+
+    private static func screen(containing rect: CGRect) -> NSScreen? {
+        NSScreen.screens.max { left, right in
+            left.frame.intersection(rect).width * left.frame.intersection(rect).height <
+            right.frame.intersection(rect).width * right.frame.intersection(rect).height
         }
     }
 

@@ -386,6 +386,14 @@ Glass chat panel grows out of the icon.
   doubled/ghosted "two panels" overlay with no blur. The panel is a borderless
   `NSPanel` with `canBecomeKey`/`canBecomeMain` overridden and is deliberately
   NOT `.nonactivatingPanel` (typing needs a key window).
+- **Anchor geometry must convert through the view hierarchy.** `button.frame` is
+  in the superview's coordinates; never pass it directly to
+  `window.convertToScreen`. Use `button.convert(button.bounds, to: nil)` first,
+  choose the `NSScreen` intersecting that anchor (not `NSScreen.main`), then clamp
+  the entire 380×500 final frame inside that screen's `visibleFrame`. The open/
+  close morph animates the real `NSPanel` frame between the status-pill seed and
+  full panel. Keep the presentation-generation guard: otherwise a rapid reopen
+  can be hidden by the previous dismiss animation's completion callback.
 - **Code lives in `ListenMac/Sources/QuickChat.swift`.** Do not regress the
   dictation path; the chat never touches the mic or the paste flow.
 

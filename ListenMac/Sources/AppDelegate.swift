@@ -409,7 +409,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func statusButtonFrame() -> CGRect? {
         guard let button = statusItem?.button, let window = button.window else { return nil }
-        return window.convertToScreen(button.frame)
+        // button.frame is in the button's superview coordinates, while
+        // convertToScreen expects a rect in the window's base coordinates.
+        // Convert bounds through the view hierarchy first or the chat anchor
+        // drifts/crops unpredictably (especially on secondary displays).
+        let windowRect = button.convert(button.bounds, to: nil)
+        return window.convertToScreen(windowRect)
     }
 
     private func chatResponse(_ text: String, history: [ChatMessage], backend: QuickChatBackend) async -> String {
