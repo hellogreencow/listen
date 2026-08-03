@@ -361,17 +361,15 @@ Common error codes you'll see in `/tmp/listen-paste.log`:
 
 ## Quick Chat (Liquid Glass typed assistant)
 
-The typed sibling of Quick Thought — click the Listen status item (or
-Cmd+Shift+Space) and a Liquid Glass chat panel grows out of the icon.
+The typed sibling of Quick Thought — click the Listen status item and a Liquid
+Glass chat panel grows out of the icon.
 
-- **Left-click on the status item opens the chat island.** The classic menu stays
-  assigned as `statusItem.menu` so AppKit shows it on right-click automatically,
-  and every menu action is also reachable from the chat's gear. Do not call the
-  deprecated `statusItem.popUpMenu(_:)` — it fails `-warnings-as-errors`.
-- **The open shortcut is Carbon `RegisterEventHotKey` (Cmd+Shift+Space), NOT an
-  NSEvent global monitor.** Carbon needs no Accessibility/Input Monitoring grant.
-  The class is `@unchecked Sendable` with a `@MainActor` trigger property so the
-  C callback can hop to the main actor under strict Swift 6.
+- **Left-click on the status item is the ONLY Quick Chat trigger.** Do not add a
+  global shortcut: Cmd+Shift+Space belongs to Hermes Mini Chat, and registering it
+  in Listen opens both surfaces. The classic menu stays assigned as
+  `statusItem.menu` so AppKit shows it on right-click automatically, and every
+  menu action is also reachable from the chat's gear. Do not call the deprecated
+  `statusItem.popUpMenu(_:)` — it fails `-warnings-as-errors`.
 - **Two backends.** `fast` (default) = the same direct `assistant` LLM as Quick
   Thought, memories retrieved locally — sub-second. `hermes` = the whole
   conversation passed to `HermesInterpreter.interpret` for full profile/memory/

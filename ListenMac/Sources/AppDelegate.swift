@@ -15,7 +15,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let wakeWord = WakeWordController()
     private let speaker = SpeechSpeaker()
     private let responsePresenter = VoiceResponsePresenter()
-    private let quickChatShortcut = QuickChatShortcut()
     private var quickChat: QuickChatController!
     private var settings = SettingsStore.load()
     private var stt: STTProvider?
@@ -397,9 +396,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 SettingsStore.save(self.settings)
             }
         )
-        quickChatShortcut.onTrigger = { [weak self] in self?.toggleQuickChat() }
-        quickChatShortcut.install()
-        listenLog("quick chat configured backend=\(settings.chat_backend)")
+        listenLog("quick chat configured backend=\(settings.chat_backend) trigger=menubar-only")
     }
 
     @objc private func statusItemClicked() {

@@ -1,6 +1,5 @@
 import AppKit
 import SwiftUI
-import Carbon
 
 // MARK: - Model
 
@@ -391,61 +390,4 @@ struct QuickChatView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
     }
-}
-
-// MARK: - Cmd+Shift+Space Carbon hotkey (no TCC permission required)
-
-/// Registers a single global chord via Carbon's RegisterEventHotKey. Unlike an
-/// NSEvent global monitor, this needs no Accessibility/Input Monitoring grant.
-final class QuickChatShortcut: @unchecked Sendable {
-    @MainActor var onTrigger: (() -> Void)?
-
-    private var hotKeyRef: EventHotKeyRef? = nil
-    private var handlerRef: EventHandlerRef?
-    private var installed = false
-
-    @MainActor init() {}
-
-    func install() {
-        guard !installed else { return }
-        var eventType = EventTypeSpec(
-            eventClass: OSType(kEventClassKeyboard),
-            eventKind: UInt32(kEventHotKeyPressed)
-        )
-        let selfPointer = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
-        let status = InstallEventHandler(
-            GetEventDispatcherTarget(),
-            quickChatHotKeyHandler,
-            1, &eventType,
-            selfPointer,
-            &handlerRef
-        )
-        guard status == noErr else { return }
-
-        let hotKeyID = EventHotKeyID(signature: OSType(0x4C495354), id: 1)
-        let registerStatus = RegisterEventHotKey(
-            UInt32(kVK_Space),
-            UInt32(cmdKey | shiftKey),
-            hotKeyID,
-            GetEventDispatcherTarget(),
-            0,
-            &hotKeyRef
-        )
-        if registerStatus == noErr { installed = true }
-    }
-
-    deinit {
-        if let hotKeyRef { UnregisterEventHotKey(hotKeyRef) }
-    }
-}
-
-private func quickChatHotKeyHandler(
-    _ nextHandler: EventHandlerCallRef?,
-    _ event: EventRef?,
-    _ userData: UnsafeMutableRawPointer?
-) -> OSStatus {
-    guard let userData else { return noErr }
-    let shortcut = Unmanaged<QuickChatShortcut>.fromOpaque(userData).takeUnretainedValue()
-    Task { @MainActor in shortcut.onTrigger?() }
-    return noErr
 }
