@@ -141,7 +141,10 @@ xcrun stapler validate -v "$INSTALLED_APP"
 hdiutil detach "$MOUNT_POINT" -quiet
 MOUNT_POINT=""
 
-shasum -a 256 "$DMG_PATH" > "$DMG_PATH.sha256"
+(
+  cd "$RELEASE_DIR"
+  shasum -a 256 "$(basename "$DMG_PATH")" > "$(basename "$DMG_PATH").sha256"
+)
 echo ""
 echo "✓ Trusted release ready: $DMG_PATH"
 echo "✓ Checksum: $DMG_PATH.sha256"
