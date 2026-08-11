@@ -39,8 +39,8 @@ enum StatusAppearance {
     static let speedRange = 0.25...2.0
     static let intensityRange = 0.45...1.0
     static let idleTextSizeRange = 12.0...15.0
-    /// Zero is safe because itemLength still reserves the complete measured
-    /// width of "listening"; this only removes otherwise-empty outer space.
+    /// Zero is safe because itemLength still reserves the wider measured label
+    /// ("Listen" or "listening"); this only removes otherwise-empty outer space.
     static let textPaddingRange = 0.0...18.0
 
     static func style(named name: String) -> StatusColorStyle {

@@ -8,9 +8,10 @@ running competing recorders.
 
 [Download the latest macOS release](https://github.com/hellogreencow/listen/releases/latest).
 The Universal 2 app runs natively on Apple silicon (`arm64`) and Intel
-(`x86_64`) Macs running macOS 13 or later. Releases are currently self-signed
-and not Apple-notarized; the release notes include the exact verification and
-first-launch steps.
+(`x86_64`) Macs running macOS 13 or later. Open the downloaded DMG, drag Listen
+to Applications, eject the image, and open Listen from Applications. Published
+releases are signed with Developer ID and notarized by Apple, so no Gatekeeper
+bypass is required.
 
 ## Four modes
 
@@ -39,8 +40,8 @@ On first launch it also anchors itself at the Control Center end of the bar,
 where the system privacy module cannot push it beneath a MacBook notch; a later
 Command-drag still sets and preserves the user's preferred position.
 Preferences → Appearance provides live animated previews for Rainbow, Aurora,
-Ocean, and Sunset, along with speed, intensity, idle text-size, and spacing
-controls.
+Ocean, and Sunset, along with speed, intensity, shared text-size, and spacing
+controls. Idle Listen and active listening use the same face.
 
 ## Local data
 
@@ -188,6 +189,22 @@ certificate leaf[subject.CN] = "Listen Local Signing"
 Do not replace this with ad-hoc signing or hardened runtime without a proper
 Developer ID/notarization plan; either can break the existing TCC grants or
 event delivery.
+
+## Trusted DMG release
+
+Public releases use a separate, fail-closed path. It requires a `Developer ID
+Application` identity and Apple notarization credentials; it will not emit a
+self-signed or unnotarized DMG:
+
+```bash
+export LISTEN_NOTARY_PROFILE=Listen-Notarization
+ListenMac/release.sh
+```
+
+The output is `ListenMac/build/release/Listen-<version>.dmg` plus its SHA-256
+checksum. The script runs the stress suite, builds once with hardened runtime,
+notarizes and staples the app, creates the drag-to-Applications image, then
+notarizes, staples, mounts, copies, and Gatekeeper-verifies the final DMG.
 
 ## Verification
 

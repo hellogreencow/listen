@@ -176,15 +176,14 @@ enum StressHarness {
         try require(StatusAppearance.idleTextSize(100) == CGFloat(StatusAppearance.idleTextSizeRange.upperBound),
                     "idle text size was not upper-bounded")
 
-        let idleFont = NSFont.systemFont(ofSize: StatusAppearance.defaultIdleTextSize, weight: .medium)
-        let activeFont = NSFont.systemFont(ofSize: 12)
-        let idleWidth = ("Listen" as NSString).size(withAttributes: [.font: idleFont, .kern: 0.05]).width
-        let activeWidth = ("listening" as NSString).size(withAttributes: [.font: activeFont, .kern: 0.05]).width
+        let statusFont = NSFont.systemFont(ofSize: StatusAppearance.defaultIdleTextSize, weight: .medium)
+        let idleWidth = ("Listen" as NSString).size(withAttributes: [.font: statusFont, .kern: 0.05]).width
+        let activeWidth = ("listening" as NSString).size(withAttributes: [.font: statusFont, .kern: 0.05]).width
         let fixedWidth = StatusAppearance.itemLength(
             idleText: "Listen",
-            idleFont: idleFont,
+            idleFont: statusFont,
             activeText: "listening",
-            activeFont: activeFont,
+            activeFont: statusFont,
             padding: 0
         )
         try require(fixedWidth == ceil(max(idleWidth, activeWidth)),

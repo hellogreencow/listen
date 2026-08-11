@@ -70,7 +70,19 @@ learned by breaking the user's working app multiple times in one session.
 
 - Don't sign with `--options runtime` (hardened runtime). Hardened runtime
   without notarization + entitlements silently neuters CGEventTap and other
-  privileged APIs. Listen does not use hardened runtime.
+  privileged APIs. Local Listen builds do not use hardened runtime.
+
+- **Public DMG releases are the exception and use `ListenMac/release.sh`.**
+  That path requires a real `Developer ID Application` identity, enables
+  hardened runtime with only Audio Input and Apple Events resource
+  entitlements, adds a secure timestamp, notarizes/staples the app, creates a
+  drag-to-Applications DMG, then notarizes/staples and Gatekeeper-verifies the
+  mounted/copy-installed result. It fails closed if Developer ID or
+  notarization credentials are missing; never add an unnotarized fallback.
+  Local `build.sh` behavior stays self-signed by default so existing local TCC
+  grants remain stable. A user's first Developer ID build has a different
+  designated requirement and receives the normal one-time permission prompts;
+  later public releases from the same team and bundle identifier remain stable.
 
 ## Hotkey: which API to use
 

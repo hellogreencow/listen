@@ -192,7 +192,7 @@ struct SettingsView: View {
             }
             section("Text") {
                 HStack {
-                    Text("Listen size")
+                    Text("Text size")
                     Slider(
                         value: $model.settings.menubar_text_size,
                         in: StatusAppearance.idleTextSizeRange,
@@ -211,10 +211,10 @@ struct SettingsView: View {
                     Text("\(Int(model.settings.menubar_text_padding)) pt")
                         .monospacedDigit().foregroundStyle(.secondary).frame(width: 48)
                 }
-                Text("The width stays fixed between Listen and listening, so the label does not jump when recording begins.")
+                Text("Listen and listening share the same size and weight. Width stays fixed to the wider label so the slot does not jump.")
                     .font(.callout).foregroundStyle(.secondary)
             }
-            Text("macOS adds its own microphone privacy indicator while the mic is active. Listen keeps that system item separated from this text, but apps cannot disable it on the built-in display.")
+            Text("macOS adds its own microphone privacy indicator while the mic is active. Apps cannot hide that indicator for Listen alone on the built-in display.")
                 .font(.caption).foregroundStyle(.tertiary)
             footer
         }
@@ -228,7 +228,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 7) {
                 MenuBarAppearancePreview(
                     text: "listening",
-                    fontSize: 12,
+                    fontSize: model.settings.menubar_text_size,
                     styleName: style.rawValue,
                     speed: model.settings.menubar_animation_speed,
                     intensity: model.settings.menubar_color_intensity,

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Build, bundle, and sign Listen.app with a stable self-signed identity so
-# macOS TCC (Microphone, Input Monitoring, Accessibility) keeps your grants
-# across rebuilds. Re-run as often as you like; permissions persist.
+# Build and bundle Listen.app. Local builds use the stable self-signed identity
+# so TCC grants survive rebuilds. Public releases select Developer ID signing.
 
 set -euo pipefail
 
@@ -13,9 +12,12 @@ CERT_NAME="Listen Local Signing"
 KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 BUILD_DIR="$(pwd)/build"
 APP_PATH="$BUILD_DIR/$APP_NAME.app"
+SIGNING_MODE="${LISTEN_SIGNING_MODE:-local}"
+SIGNING_IDENTITY="${LISTEN_SIGNING_IDENTITY:-}"
+ENTITLEMENTS_PATH="${LISTEN_ENTITLEMENTS_PATH:-$(pwd)/Release.entitlements}"
 
 # ─── 1. Self-signed code-signing cert (one-time) ────────────────────────────
-if ! security find-certificate -c "$CERT_NAME" "$KEYCHAIN" >/dev/null 2>&1; then
+if [[ "$SIGNING_MODE" == "local" ]] && ! security find-certificate -c "$CERT_NAME" "$KEYCHAIN" >/dev/null 2>&1; then
   echo "→ Creating self-signed cert '$CERT_NAME'…"
   TMP=$(mktemp -d)
   cat > "$TMP/cfg.cnf" <<EOF
@@ -45,6 +47,31 @@ EOF
     -s -k "" "$KEYCHAIN" >/dev/null 2>&1 || true
   rm -rf "$TMP"
   echo "  ✓ cert installed in login keychain"
+fi
+
+if [[ "$SIGNING_MODE" == "developer-id" ]]; then
+  if [[ ! -f "$ENTITLEMENTS_PATH" ]]; then
+    echo "error: release entitlements not found: $ENTITLEMENTS_PATH" >&2
+    exit 1
+  fi
+  if [[ -z "$SIGNING_IDENTITY" ]]; then
+    SIGNING_IDENTITY="$({ security find-identity -v -p codesigning 2>/dev/null || true; } \
+      | sed -n 's/^.*"\(Developer ID Application: [^"]*\)".*$/\1/p')"
+  fi
+  if [[ -z "$SIGNING_IDENTITY" || "$SIGNING_IDENTITY" == *$'\n'* ]]; then
+    echo "error: exactly one Developer ID Application identity is required." >&2
+    echo "Set LISTEN_SIGNING_IDENTITY when more than one identity is installed." >&2
+    exit 1
+  fi
+  if [[ "$SIGNING_IDENTITY" != "Developer ID Application: "* ]]; then
+    echo "error: public releases must use a Developer ID Application identity." >&2
+    exit 1
+  fi
+elif [[ "$SIGNING_MODE" == "local" ]]; then
+  SIGNING_IDENTITY="$CERT_NAME"
+else
+  echo "error: LISTEN_SIGNING_MODE must be 'local' or 'developer-id'." >&2
+  exit 1
 fi
 
 # ─── 2. Compile ─────────────────────────────────────────────────────────────
@@ -85,30 +112,44 @@ rm -rf "$SLICE_DIR"
 
 # ─── 3. Bundle resources ────────────────────────────────────────────────────
 cp Info.plist "$APP_PATH/Contents/Info.plist"
-if [[ -f Resources/Listen.icns ]]; then
-  cp Resources/Listen.icns "$APP_PATH/Contents/Resources/Listen.icns"
+ICON_FILE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' Info.plist)"
+if [[ ! -f "Resources/$ICON_FILE" ]]; then
+  echo "error: app icon not found: Resources/$ICON_FILE" >&2
+  exit 1
 fi
+cp "Resources/$ICON_FILE" "$APP_PATH/Contents/Resources/$ICON_FILE"
 /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $APP_NAME" "$APP_PATH/Contents/Info.plist" >/dev/null
 
 # ─── 4. Sign with stable identity + cdhash-independent requirement ──────────
-# The designated requirement below makes macOS match this app by certificate
-# subject CN, NOT by cdhash. So TCC grants (Accessibility, Microphone, etc.)
-# survive every rebuild instead of being silently revoked.
-REQ_FILE="$(mktemp)"
-cat > "$REQ_FILE" <<EOF
+# Developer ID releases use Apple's standard team-and-identifier requirement,
+# hardened runtime, a secure timestamp, and only the resource entitlements the
+# app needs. Local builds keep the cert-pinned requirement that preserves TCC.
+if [[ "$SIGNING_MODE" == "developer-id" ]]; then
+  echo "→ Signing for distribution with '$SIGNING_IDENTITY'…"
+  codesign --force \
+    --sign "$SIGNING_IDENTITY" \
+    --identifier "$BUNDLE_ID" \
+    --options runtime \
+    --timestamp \
+    --entitlements "$ENTITLEMENTS_PATH" \
+    "$APP_PATH"
+else
+  REQ_FILE="$(mktemp)"
+  cat > "$REQ_FILE" <<EOF
 designated => identifier "$BUNDLE_ID" and certificate leaf[subject.CN] = "$CERT_NAME"
 EOF
 
-echo "→ Signing with '$CERT_NAME' (cert-pinned designated requirement)…"
-codesign --force --deep \
-  --sign "$CERT_NAME" \
-  --identifier "$BUNDLE_ID" \
-  --requirements "$REQ_FILE" \
-  --timestamp=none \
-  "$APP_PATH"
-rm -f "$REQ_FILE"
+  echo "→ Signing with '$SIGNING_IDENTITY' (cert-pinned designated requirement)…"
+  codesign --force \
+    --sign "$SIGNING_IDENTITY" \
+    --identifier "$BUNDLE_ID" \
+    --requirements "$REQ_FILE" \
+    --timestamp=none \
+    "$APP_PATH"
+  rm -f "$REQ_FILE"
+fi
 
-codesign --verify --verbose "$APP_PATH" 2>&1 | sed 's/^/   /'
+codesign --verify --deep --strict --verbose "$APP_PATH" 2>&1 | sed 's/^/   /'
 codesign -d -r- "$APP_PATH" 2>&1 | grep "^designated" | sed 's/^/   DR: /'
 echo ""
 echo "✓ Built: $APP_PATH"
