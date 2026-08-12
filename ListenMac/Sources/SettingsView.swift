@@ -9,6 +9,7 @@ final class SettingsModel: ObservableObject {
     private let onMicrophoneTest: () -> Void
     private let onQuickThoughtTest: () -> Void
     private let onToggleConversation: () -> Bool
+    private let onSetup: () -> Void
     private var applyCancellable: AnyCancellable?
 
     init(
@@ -17,7 +18,8 @@ final class SettingsModel: ObservableObject {
         onSave: @escaping (AppSettings) -> Void,
         onMicrophoneTest: @escaping () -> Void = {},
         onQuickThoughtTest: @escaping () -> Void = {},
-        onToggleConversation: @escaping () -> Bool = { false }
+        onToggleConversation: @escaping () -> Bool = { false },
+        onSetup: @escaping () -> Void = {}
     ) {
         self.settings = initial
         self.conversationRecording = conversationRecording
@@ -25,6 +27,7 @@ final class SettingsModel: ObservableObject {
         self.onMicrophoneTest = onMicrophoneTest
         self.onQuickThoughtTest = onQuickThoughtTest
         self.onToggleConversation = onToggleConversation
+        self.onSetup = onSetup
         // Apply-as-you-edit. The explicit Save button meant closing the
         // window silently discarded changes. Debounced so per-keystroke
         // edits don't thrash provider/hotkey reloads.
@@ -37,6 +40,7 @@ final class SettingsModel: ObservableObject {
     func testMicrophone() { onMicrophoneTest() }
     func testQuickThought() { onQuickThoughtTest() }
     func toggleConversation() { conversationRecording = onToggleConversation() }
+    func showSetup() { onSetup() }
 }
 
 struct SettingsView: View {
@@ -364,6 +368,12 @@ struct SettingsView: View {
             Text("Hold a hotkey, speak, release, and the transcription is pasted into the focused app.")
                 .foregroundStyle(.secondary)
             Divider().padding(.vertical, 8)
+            HStack {
+                Text("Setup status")
+                Spacer()
+                Button("Open Setup Assistant") { model.showSetup() }
+                    .buttonStyle(.borderedProminent)
+            }
             HStack {
                 Text("Config file")
                 Spacer()

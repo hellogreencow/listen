@@ -3,6 +3,26 @@ import Carbon.HIToolbox
 
 @MainActor
 enum Paster {
+    enum Outcome: Equatable {
+        case success
+        case accessibilityDenied
+        case automationDenied
+        case failed(String)
+
+        var message: String {
+            switch self {
+            case .success:
+                return "Ready"
+            case .accessibilityDenied:
+                return "Accessibility is required to send the paste shortcut."
+            case .automationDenied:
+                return "Automation access to System Events is required to paste."
+            case .failed(let message):
+                return message
+            }
+        }
+    }
+
     /// Compiled once — NSAppleScript(source:) re-compiles on every call
     /// otherwise, which costs tens of ms per paste. Main-thread only.
     private static let pasteScript: NSAppleScript? = {
@@ -17,7 +37,7 @@ enum Paster {
     /// restore raced the synth Cmd+V (300 ms was eating the paste), and
     /// leaving the transcript on the clipboard means even if synth delivery
     /// fails, the user can manually Cmd+V and get the text.
-    static func paste(_ text: String) {
+    static func paste(_ text: String, completion: ((Outcome) -> Void)? = nil) {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(text, forType: .string)
@@ -31,6 +51,7 @@ enum Paster {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
             var err: NSDictionary?
             let result = pasteScript?.executeAndReturnError(&err)
+            let outcome = outcome(for: err)
             // Direct file log — bypasses os_log privacy redaction so we can
             // actually read the AppleScript outcome.
             let line = "\(Date()) result=\(String(describing: result)) err=\(String(describing: err))\n"
@@ -42,6 +63,33 @@ enum Paster {
                     try? data.write(to: url)
                 }
             }
+            completion?(outcome)
+        }
+    }
+
+    /// A harmless System Events query used by setup to trigger and verify the
+    /// Automation consent prompt before the user's first real dictation.
+    static func probeAutomation() -> Outcome {
+        let source = "tell application \"System Events\" to get name of first application process whose frontmost is true"
+        var err: NSDictionary?
+        let result = NSAppleScript(source: source)?.executeAndReturnError(&err)
+        let outcome = outcome(for: err)
+        listenLog("setup automation probe result=\(result == nil ? "nil" : "ok") outcome=\(outcome.message)")
+        return outcome
+    }
+
+    private static func outcome(for error: NSDictionary?) -> Outcome {
+        guard let error else { return .success }
+        let number = error["NSAppleScriptErrorNumber"] as? Int ?? 0
+        switch number {
+        case 1002:
+            return .accessibilityDenied
+        case -1743:
+            return .automationDenied
+        default:
+            let message = error["NSAppleScriptErrorMessage"] as? String
+                ?? "System Events could not paste."
+            return .failed(message)
         }
     }
 }

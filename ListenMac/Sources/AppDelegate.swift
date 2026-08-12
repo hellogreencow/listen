@@ -6,7 +6,7 @@ import SwiftUI
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private enum State { case idle, listening, thinking }
-    private enum CaptureMode { case dictation, quickThought, microphoneTest }
+    private enum CaptureMode { case dictation, quickThought, microphoneTest, setupTest }
 
     private var statusItem: NSStatusItem!
     private let hotkey = Hotkey()
@@ -22,6 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var assistant: Interpreter?
 
     private var settingsWindow: NSWindow?
+    private var setupWindow: NSWindow?
+    private var setupModel: SetupAssistantModel?
     private var notesWindow: NSWindow?
     private var conversationsWindow: NSWindow?
     private var conversationsModel: ConversationLibraryModel?
@@ -81,7 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configureQuickChat()
         configureWakeCallbacks()
         startHotkey()
-        ensurePermissionsOnFirstRun()
+        listenLog("startup accessibility=\(AXIsProcessTrusted()) microphone=\(AVCaptureDevice.authorizationStatus(for: .audio).rawValue)")
         observeWake()
         prewarmConnections(includeAssistant: false)
         Task.detached(priority: .utility) {
@@ -90,6 +92,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         resumePendingConversationReports()
         if settings.wake_word_enabled { enableWakeWord() }
+        if !SetupCompletion.isComplete {
+            DispatchQueue.main.async { [weak self] in self?.showSetup() }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -313,6 +318,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         let prefs = NSMenuItem(title: "Preferences…", action: #selector(showPrefs), keyEquivalent: ",")
         prefs.target = self; menu.addItem(prefs)
+        let setup = NSMenuItem(title: "Setup Assistant…", action: #selector(showSetup), keyEquivalent: "")
+        setup.target = self; menu.addItem(setup)
         let conversations = NSMenuItem(
             title: "Open Conversations", action: #selector(showConversationsFromMenu), keyEquivalent: "c"
         )
@@ -518,12 +525,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func ensurePermissionsOnFirstRun() {
-        AVCaptureDevice.requestAccess(for: .audio) { _ in }
-        NSLog("[Listen] startup: AXIsProcessTrusted = \(AXIsProcessTrusted())")
-    }
-
     // MARK: - Settings and windows
+
+    @objc private func showSetup() {
+        if let window = setupWindow {
+            setupModel?.refreshPermissions()
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        let model = SetupAssistantModel(
+            settings: settings,
+            onSettingsChanged: { [weak self] new in self?.applySettings(new) },
+            onStartTest: { [weak self] in self?.runTimedCapture(.setupTest, seconds: 4) },
+            onFinish: { [weak self] in
+                guard let self else { return }
+                SetupCompletion.markComplete()
+                self.setupWindow?.orderOut(nil)
+                self.notify("Setup complete — hold \(self.setupModel?.selectedHotkeyLabel ?? "your shortcut") to dictate")
+                listenLog("setup completed end_to_end=true")
+            }
+        )
+        let host = NSHostingController(rootView: SetupAssistantView(model: model))
+        let window = NSWindow(contentViewController: host)
+        window.title = "Set Up Listen"
+        window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
+        window.setContentSize(NSSize(width: 780, height: 590))
+        window.center()
+        window.isReleasedWhenClosed = false
+        setupModel = model
+        setupWindow = window
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        listenLog("setup presented completed_before=false")
+    }
 
     @objc private func showPrefs() {
         if let window = settingsWindow {
@@ -539,7 +574,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self else { return false }
                 self.toggleConversationRecording()
                 return self.conversationRecorder.isRecording
-            }
+            },
+            onSetup: { [weak self] in self?.showSetup() }
         )
         let host = NSHostingController(rootView: SettingsView(model: model))
         let window = NSWindow(contentViewController: host)
@@ -657,8 +693,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if state == .thinking {
             processTask?.cancel(); processTask = nil; state = .idle
         }
-        guard state == .idle else { return }
-        guard stt != nil else { notify("No STT provider configured — open Preferences."); return }
+        guard state == .idle else {
+            if mode == .setupTest { setupModel?.failTest("Listen is busy. Wait a moment and run the test again.") }
+            return
+        }
+        guard stt != nil else {
+            if mode == .setupTest { setupModel?.failTest("The selected transcription provider is not configured.") }
+            else { notify("No STT provider configured — open Preferences.") }
+            return
+        }
         assistantTask?.cancel(); assistantTask = nil
         voiceSession &+= 1
         speaker.stop()
@@ -675,7 +718,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do { try recorder.start() }
         catch {
             state = .idle; captureMode = nil
-            notify("Mic error: \(error.localizedDescription)")
+            if mode == .setupTest { setupModel?.failTest("Microphone error: \(error.localizedDescription)") }
+            else { notify("Mic error: \(error.localizedDescription)") }
             return
         }
         let work = DispatchWorkItem { [weak self] in
@@ -707,6 +751,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         state = .thinking
+        if mode == .setupTest { setupModel?.markTranscribing() }
         let id = session
         listenLog("capture end id=\(id) mode=\(mode); finalizing")
         processTask = Task {
@@ -719,7 +764,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         defer {
             if id == session, state == .thinking { state = .idle; captureMode = nil }
         }
-        guard let url, let stt else { return }
+        guard let url, let stt else {
+            if mode == .setupTest { setupModel?.failTest("The recording could not be finalized.") }
+            return
+        }
         defer { try? FileManager.default.removeItem(at: url) }
         let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? Int ?? -1
         listenLog("capture process id=\(id) bytes=\(size) mode=\(mode)")
@@ -739,7 +787,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard id == session, !Task.isCancelled else { return }
             guard !text.isEmpty else {
                 listenLog("capture empty id=\(id) mode=\(mode)")
-                notify("Empty transcription — check microphone permission")
+                if mode == .setupTest { setupModel?.failTest("No speech was detected. Speak clearly and run the test again.") }
+                else { notify("Empty transcription — check microphone permission") }
                 return
             }
             switch mode {
@@ -769,12 +818,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .microphoneTest:
                 responsePresenter.show(heading: "Microphone test", thought: "Transcription received", answer: text)
                 listenLog("microphone test complete id=\(id) chars=\(text.count)")
+            case .setupTest:
+                let latencyMS = Int(Date().timeIntervalSince(t0) * 1000)
+                setupModel?.prepareForPaste(text, latencyMS: latencyMS)
+                setupWindow?.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                    Paster.paste(text) { outcome in
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.40) { [weak self] in
+                            self?.setupModel?.completePaste(outcome)
+                            listenLog("setup test complete chars=\(text.count) elapsed_ms=\(latencyMS) outcome=\(outcome.message)")
+                        }
+                    }
+                }
             }
         } catch is CancellationError {
             NSLog("[Listen] capture session \(id) cancelled")
         } catch {
             guard id == session else { return }
-            notify("Transcription failed: \(error.localizedDescription)")
+            if mode == .setupTest { setupModel?.failTest("Transcription failed: \(error.localizedDescription)") }
+            else { notify("Transcription failed: \(error.localizedDescription)") }
             NSLog("[Listen] capture error: \(error)")
         }
     }

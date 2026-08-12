@@ -13,6 +13,14 @@ to Applications, eject the image, and open Listen from Applications. Published
 releases are signed with Developer ID and notarized by Apple, so no Gatekeeper
 bypass is required.
 
+On first launch, Listen opens a guided setup assistant instead of disappearing
+into the menu bar. It walks through transcription and shortcut choices, opens
+the exact macOS privacy panes for Microphone, Speech Recognition (when Apple
+STT is selected), Accessibility, and Automation, and updates each status live.
+Setup finishes only after a four-second test successfully records, transcribes,
+and automatically pastes into Listen's own test field. The assistant remains
+available from the right-click menu and Preferences → About.
+
 ## Four modes
 
 - **Dictation:** hold the configured key (Right Option by default), speak, and

@@ -422,3 +422,23 @@ Glass chat panel grows out of the icon.
   errors. Run `ListenMac/Tests/run-stress-tests.sh`, `git diff --check`, plist
   lint, signing verification, and real signed-app mic teardown checks before
   replacing `/Applications/Listen.app`.
+
+## First-launch setup
+
+- **An incomplete setup must open a real window on launch.** Do not regress to
+  silent permission requests or bury setup in the status menu. The assistant
+  guides provider/hotkey selection, Microphone, Apple Speech Recognition when
+  applicable, Accessibility, and Automation. Each system setting opens from
+  the corresponding row and status refreshes live on return.
+- **Setup completion means the entire user path worked.** The Finish button
+  stays locked until the built-in four-second test records, transcribes, and
+  sends Command-V into Listen's own focused test field. A transcription-only
+  microphone test is not sufficient because it misses the most common field
+  failure: System Events rejecting paste with Accessibility error 1002.
+- **Automation is preflighted harmlessly.** `Paster.probeAutomation()` asks
+  System Events only for the frontmost process name. This triggers the same
+  Apple Events consent without typing into another app. The final setup test
+  still verifies actual paste delivery.
+- **Setup stays recoverable.** Keep Setup Assistant in the right-click menu and
+  Preferences → About. Closing the window does not mark it complete; it opens
+  again on the next launch until the end-to-end test passes.

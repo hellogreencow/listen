@@ -106,6 +106,7 @@ enum StressHarness {
         defer { try? FileManager.default.removeItem(at: root) }
 
         try testSettingsCompatibility(root)
+        try testSetupReadiness()
         try testStatusAppearance()
         try testWakePhraseMatcher()
         try testSideSpecificCommandState()
@@ -122,6 +123,7 @@ enum StressHarness {
         try testMemoryScaleAndRecovery(root)
         try await testLongReportPipeline(root)
         print("PASS: settings compatibility")
+        print("PASS: first-run provider and end-to-end setup gates")
         print("PASS: horizontal menu-bar color palettes and bounded customization")
         print("PASS: wake phrase boundaries and inline-command recovery")
         print("PASS: side-specific Quick Thought command state")
@@ -152,6 +154,36 @@ enum StressHarness {
         try require(decoded.menubar_color_style == "rainbow", "horizontal rainbow must be the default")
         try require(decoded.menubar_text_padding == 2, "compact menu-bar text default changed")
         try require(decoded.menubar_text_size == 14, "idle menu-bar text size default changed")
+    }
+
+    private static func testSetupReadiness() throws {
+        var settings = AppSettings()
+        try require(SetupReadiness.providerIssue(settings, appleSTTAvailable: true) == nil,
+                    "free Apple STT was not setup-ready on supported macOS")
+        try require(SetupReadiness.providerIssue(settings, appleSTTAvailable: false) != nil,
+                    "unsupported Apple STT was incorrectly setup-ready")
+
+        settings.stt_provider = "groq"
+        try require(SetupReadiness.providerIssue(settings, appleSTTAvailable: true) != nil,
+                    "missing Groq key was incorrectly setup-ready")
+        settings.groq_api_key = "configured"
+        try require(SetupReadiness.providerIssue(settings, appleSTTAvailable: true) == nil,
+                    "configured Groq provider did not become setup-ready")
+
+        try require(!SetupReadiness.canRunEndToEndTest(
+            providerReady: true,
+            microphoneReady: true,
+            speechReady: true,
+            accessibilityReady: false,
+            automationReady: true
+        ), "setup test bypassed Accessibility")
+        try require(SetupReadiness.canRunEndToEndTest(
+            providerReady: true,
+            microphoneReady: true,
+            speechReady: true,
+            accessibilityReady: true,
+            automationReady: true
+        ), "fully ready setup could not run its end-to-end test")
     }
 
     private static func testHermesPromptTransport() throws {

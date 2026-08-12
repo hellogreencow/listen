@@ -107,6 +107,39 @@ struct AppSettings: Codable {
     }
 }
 
+/// Pure setup gates shared by the first-run UI and stress harness. Keeping
+/// these decisions outside the view prevents a green "ready" state when the
+/// selected provider cannot actually be constructed.
+enum SetupReadiness {
+    static func providerIssue(_ settings: AppSettings, appleSTTAvailable: Bool) -> String? {
+        switch settings.stt_provider {
+        case "apple":
+            return appleSTTAvailable ? nil : "Apple on-device transcription requires macOS 26 or later."
+        case "groq":
+            return settings.groq_api_key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "Add a Groq API key." : nil
+        case "openai":
+            return settings.openai_api_key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "Add an OpenAI API key." : nil
+        case "elevenlabs":
+            return settings.elevenlabs_api_key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "Add an ElevenLabs API key." : nil
+        default:
+            return "Choose a transcription provider."
+        }
+    }
+
+    static func canRunEndToEndTest(
+        providerReady: Bool,
+        microphoneReady: Bool,
+        speechReady: Bool,
+        accessibilityReady: Bool,
+        automationReady: Bool
+    ) -> Bool {
+        providerReady && microphoneReady && speechReady && accessibilityReady && automationReady
+    }
+}
+
 private extension KeyedDecodingContainer {
     func value<T: Decodable>(_ key: Key, _ fallback: T) -> T {
         if let v = try? decodeIfPresent(T.self, forKey: key) { return v }
