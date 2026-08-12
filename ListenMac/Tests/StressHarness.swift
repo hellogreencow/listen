@@ -112,6 +112,7 @@ enum StressHarness {
         try testSideSpecificCommandState()
         try testSpeechEchoGate()
         try testElevenLabsTokenSpacing()
+        try testAdaptiveDictationCleanup()
         try testXAITTSRequest()
         try testHermesPromptTransport()
         try testRollingAudioPolicy()
@@ -129,6 +130,7 @@ enum StressHarness {
         print("PASS: side-specific Quick Thought command state")
         print("PASS: assistant echo suppression with genuine barge-in preservation")
         print("PASS: ElevenLabs explicit token spacing across scripts")
+        print("PASS: adaptive cleanup bypasses redundant network work without ignoring messy speech")
         print("PASS: xAI custom-voice request parity with retired daemon")
         print("PASS: Hermes large prompts stay off process arguments")
         print("PASS: rolling audio chunk boundaries and unbounded frame progression")
@@ -154,6 +156,7 @@ enum StressHarness {
         try require(decoded.menubar_color_style == "rainbow", "horizontal rainbow must be the default")
         try require(decoded.menubar_text_padding == 2, "compact menu-bar text default changed")
         try require(decoded.menubar_text_size == 14, "idle menu-bar text size default changed")
+        try require(decoded.adaptive_cleanup_enabled, "adaptive cleanup must migrate on for existing users")
     }
 
     private static func testSetupReadiness() throws {
@@ -293,6 +296,20 @@ enum StressHarness {
         ElevenLabsTokenAssembler.append("は", type: "word", to: &japanese)
         ElevenLabsTokenAssembler.append("晴れ", type: "word", to: &japanese)
         try require(japanese == "今日は晴れ", "implicit spaces corrupted a no-space script")
+    }
+
+    private static func testAdaptiveDictationCleanup() throws {
+        let clean = "Listen turns speech into text wherever you type. Hold Right Option and speak naturally"
+        try require(!AdaptiveDictationCleanup.needsNetworkCleanup(clean),
+                    "clean dictation unnecessarily required cloud cleanup")
+        try require(AdaptiveDictationCleanup.fastPolish(clean).hasSuffix("."),
+                    "local fast cleanup did not finish sentence punctuation")
+        try require(AdaptiveDictationCleanup.needsNetworkCleanup("Um I mean send it tomorrow"),
+                    "filler and a correction restart bypassed full cleanup")
+        try require(AdaptiveDictationCleanup.needsNetworkCleanup("Please please send the launch plan"),
+                    "repeated words bypassed full cleanup")
+        try require(AdaptiveDictationCleanup.needsNetworkCleanup("send the final version"),
+                    "lowercase unpolished speech bypassed full cleanup")
     }
 
     private static func testXAITTSRequest() throws {

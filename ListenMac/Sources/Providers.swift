@@ -75,6 +75,46 @@ protocol Interpreter: Sendable {
     func interpret(_ text: String, prompt: String) async throws -> String
 }
 
+/// Avoids a second network request when the recognizer has already produced
+/// clean prose. Obvious restarts, filler, repetition, and long unstructured
+/// passages still receive the configured LLM cleanup.
+enum AdaptiveDictationCleanup {
+    private static let fillers: Set<String> = ["ah", "erm", "hmm", "uh", "um"]
+    private static let correctionPhrases = [
+        "actually no", "i mean", "never mind", "scratch that", "sorry correction"
+    ]
+
+    static func needsNetworkCleanup(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let words = normalizedWords(trimmed)
+        if words.count > 80 { return true }
+        if words.contains(where: fillers.contains) { return true }
+        if zip(words, words.dropFirst()).contains(where: ==) { return true }
+        let lower = " " + words.joined(separator: " ") + " "
+        if correctionPhrases.contains(where: { lower.contains(" \($0) ") }) { return true }
+        if let first = trimmed.first, first.isLetter, first.isLowercase { return true }
+        if words.count > 18,
+           trimmed.rangeOfCharacter(from: CharacterSet(charactersIn: ".,;:!?")) == nil {
+            return true
+        }
+        return false
+    }
+
+    static func fastPolish(_ text: String) -> String {
+        var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let last = result.unicodeScalars.last,
+              last.isASCII, CharacterSet.alphanumerics.contains(last),
+              !result.isEmpty else { return result }
+        result.append(".")
+        return result
+    }
+
+    private static func normalizedWords(_ text: String) -> [String] {
+        text.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init)
+    }
+}
+
 // MARK: - Multipart helper
 
 private func multipart(boundary: String, fields: [String: String], file: (name: String, filename: String, mime: String, data: Data)) -> Data {

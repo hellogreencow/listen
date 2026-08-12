@@ -13,6 +13,7 @@ struct AppSettings: Codable {
     var hotkey: String = "alt_r"                  // see Hotkey.swift; user's keyboard has no Right Control
 
     var cleanup_enabled: Bool = false
+    var adaptive_cleanup_enabled: Bool = true
     var use_paste: Bool = true                    // legacy Python-app field; Swift app always pastes
     var sound_enabled: Bool = false
     var wake_word_enabled: Bool = false           // opt-in: only setting that requests Speech permission
@@ -53,7 +54,7 @@ struct AppSettings: Codable {
     enum CodingKeys: String, CodingKey {
         case openai_api_key, elevenlabs_api_key, openrouter_api_key, groq_api_key
         case stt_provider, interpreter_provider, hotkey
-        case cleanup_enabled, use_paste, sound_enabled
+        case cleanup_enabled, adaptive_cleanup_enabled, use_paste, sound_enabled
         case wake_word_enabled, wake_word_phrase, wake_conversation_timeout
         case tts_enabled, tts_provider, xai_api_key, xai_voice_id, conversation_chunk_minutes
         case menubar_color_style, menubar_animation_speed, menubar_color_intensity, menubar_text_padding
@@ -79,6 +80,7 @@ struct AppSettings: Codable {
         interpreter_provider = c.value(.interpreter_provider, d.interpreter_provider)
         hotkey               = c.value(.hotkey, d.hotkey)
         cleanup_enabled      = c.value(.cleanup_enabled, d.cleanup_enabled)
+        adaptive_cleanup_enabled = c.value(.adaptive_cleanup_enabled, d.adaptive_cleanup_enabled)
         use_paste            = c.value(.use_paste, d.use_paste)
         sound_enabled        = c.value(.sound_enabled, d.sound_enabled)
         wake_word_enabled    = c.value(.wake_word_enabled, d.wake_word_enabled)

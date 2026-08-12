@@ -802,14 +802,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let t0 = Date()
         do {
             let raw = try await transcribeWithRetry(stt, url)
+            let sttMS = Int(Date().timeIntervalSince(t0) * 1000)
+            listenLog("dictation stt id=\(id) chars=\(raw.count) elapsed_ms=\(sttMS)")
             var text = raw
             if mode == .dictation, let interpreter, !raw.isEmpty {
-                do {
-                    let cleaned = try await withTimeout(10) {
-                        try await interpreter.interpret(raw, prompt: self.settings.cleanup_prompt)
-                    }
-                    text = cleaned.isEmpty ? raw : cleaned
-                } catch { NSLog("[Listen] cleanup failed: \(error.localizedDescription) — using raw") }
+                if settings.adaptive_cleanup_enabled,
+                   !AdaptiveDictationCleanup.needsNetworkCleanup(raw) {
+                    text = AdaptiveDictationCleanup.fastPolish(raw)
+                    listenLog("dictation cleanup id=\(id) path=adaptive-local elapsed_ms=0")
+                } else {
+                    let cleanupStart = Date()
+                    do {
+                        let cleaned = try await withTimeout(10) {
+                            try await interpreter.interpret(raw, prompt: self.settings.cleanup_prompt)
+                        }
+                        text = cleaned.isEmpty ? raw : cleaned
+                        listenLog("dictation cleanup id=\(id) path=network elapsed_ms=\(Int(Date().timeIntervalSince(cleanupStart) * 1000))")
+                    } catch { NSLog("[Listen] cleanup failed: \(error.localizedDescription) — using raw") }
+                }
             }
             guard id == session, !Task.isCancelled else { return }
             guard !text.isEmpty else {

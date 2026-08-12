@@ -311,6 +311,10 @@ struct SettingsView: View {
             header("Assistant & Cleanup", "Direct provider for reflections, reports, analysis, and optional dictation polish")
             section("Enabled") {
                 Toggle("Also clean up dictation before pasting", isOn: $model.settings.cleanup_enabled)
+                Toggle("Skip cloud cleanup when text is already clean", isOn: $model.settings.adaptive_cleanup_enabled)
+                    .disabled(!model.settings.cleanup_enabled)
+                Text("Saves roughly half a second on clean dictation. Restarts, filler, repetition, and long unstructured speech still use full cleanup.")
+                    .font(.callout).foregroundStyle(.secondary)
             }
             section("Provider") {
                 Picker("Assistant", selection: $model.settings.interpreter_provider) {
