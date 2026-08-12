@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Compass-Eye Emblem — 3D</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #0a1120; }
+  #c { display: block; width: 100%; height: 100%; touch-action: none; }
+  #vignette {
+    position: fixed; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse at 50% 42%, transparent 50%, rgba(2,5,11,0.6) 100%);
+  }
+  #hint {
+    position: fixed; left: 0; right: 0; bottom: 14px; text-align: center;
+    color: rgba(200, 215, 235, 0.6); font: 13px/1.4 -apple-system, system-ui, sans-serif;
+    pointer-events: none; transition: opacity 1s;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="vignette"></div>
+<div id="hint">drag to rotate &nbsp;·&nbsp; pinch to zoom &nbsp;·&nbsp; two-finger drag to pan</div>
+<script src="three.min.js"></script>
+<script src="OrbitControls.js"></script>
+<script>
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.outputEncoding = THREE.sRGBEncoding;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0c1424);
+scene.fog = new THREE.Fog(0x0c1424, 4.5, 10);
+
+const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
+camera.position.set(0.45, 0.18, 4.3);
+
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.minDistance = 1.2;
+controls.maxDistance = 8;
+controls.maxPolarAngle = Math.PI * 0.74;   // keep camera above the floor
+controls.autoRotate = true;
+controls.autoRotateSpeed = 1.2;
+controls.addEventListener('start', () => {
+  controls.autoRotate = false;
+  document.getElementById('hint').style.opacity = 0;
+});
+
+// --- Procedural studio environment: bright soft top light, blue-grey horizon,
+//     near-black floor — this is what gives the satin metal its look ---
+const envCanvas = document.createElement('canvas');
+envCanvas.width = 512; envCanvas.height = 256;
+const ectx = envCanvas.getContext('2d');
+const grad = ectx.createLinearGradient(0, 0, 0, 256);
+grad.addColorStop(0.00, '#ffffff');
+grad.addColorStop(0.18, '#d8dde5');
+grad.addColorStop(0.42, '#5a6270');
+grad.addColorStop(0.60, '#1a1f2b');
+grad.addColorStop(1.00, '#04050a');
+ectx.fillStyle = grad;
+ectx.fillRect(0, 0, 512, 256);
+ectx.fillStyle = 'rgba(255,255,255,1)';          // overhead softboxes
+ectx.fillRect(40, 16, 180, 26);
+ectx.fillRect(320, 30, 130, 18);
+// bright front-top patch so camera-facing faces pick up a highlight gradient
+const fg = ectx.createRadialGradient(256, 66, 5, 256, 66, 95);
+fg.addColorStop(0, 'rgba(255,255,255,0.9)');
+fg.addColorStop(1, 'rgba(255,255,255,0)');
+ectx.fillStyle = fg;
+ectx.fillRect(150, 0, 212, 150);
+ectx.fillStyle = 'rgba(160,190,240,0.7)';        // cool side strip
+ectx.fillRect(180, 118, 240, 14);
+ectx.fillStyle = 'rgba(10,14,24,0.9)';           // dark slab for contrast
+ectx.fillRect(0, 150, 512, 40);
+const envTex = new THREE.CanvasTexture(envCanvas);
+envTex.mapping = THREE.EquirectangularReflectionMapping;
+const pmrem = new THREE.PMREMGenerator(renderer);
+const envMap = pmrem.fromEquirectangular(envTex).texture;
+
+const silver = new THREE.MeshStandardMaterial({
+  color: 0xcdd2da, metalness: 1.0, roughness: 0.22, envMap: envMap, envMapIntensity: 1.25
+});
+const eggMat = new THREE.MeshStandardMaterial({
+  color: 0xe2e5ea, metalness: 1.0, roughness: 0.28, envMap: envMap, envMapIntensity: 1.2
+});
+
+// --- Lights ---
+scene.add(new THREE.AmbientLight(0x2c3a4d, 0.4));
+const key = new THREE.DirectionalLight(0xffffff, 0.7);
+key.position.set(2.2, 4.0, 3.2);
+scene.add(key);
+const fill = new THREE.DirectionalLight(0x8fa8d4, 0.3);
+fill.position.set(-3, -0.5, 2);
+scene.add(fill);
+const rim = new THREE.DirectionalLight(0xcfe0ff, 0.45);
+rim.position.set(-0.5, 2, -4);
+scene.add(rim);
+
+// ==================================================================
+// The emblem. Overall radius = 1.0 at the star tips, built in the XY
+// plane and extruded in Z. Measured proportions from the photo:
+//   ring outer r 0.625 / inner 0.545, egg 0.20 x 0.27,
+//   eye lens closes ~x ±0.5, lid tips sweep past the axis to ±0.75,
+//   spike barbs at ~0.62 of the way out.
+// ==================================================================
+const emblem = new THREE.Group();
+
+// bevelT = chamfer depth in Z (gives the ridged section), bevelS = XY expansion
+// (kept small so the bevel doesn't fatten the silhouette)
+function extrude(shape, depth, bevelT, bevelS, z) {
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: depth, curveSegments: 36,
+    bevelEnabled: true, bevelThickness: bevelT, bevelSize: bevelS, bevelSegments: 3
+  });
+  geo.translate(0, 0, -depth / 2);
+  const mesh = new THREE.Mesh(geo, silver);
+  mesh.position.z = z;
+  return mesh;
+}
+
+// --- 1. Central egg (prolate ellipsoid, vertical major axis), set back so
+//        the eyelid blades pass in front of its top and bottom ---
+const egg = new THREE.Mesh(new THREE.SphereGeometry(1, 48, 36), eggMat);
+egg.scale.set(0.20, 0.27, 0.20);
+egg.position.z = -0.05;
+emblem.add(egg);
+
+// --- 2. Eyelid blades: crescents that peak at ±0.32, whose sharp tips sweep
+//        PAST the horizontal axis (upper lid tips end below it, lower above),
+//        so the tips cross at the eye corners and reach beyond the ring ---
+function lidShape(sign) { // +1 upper, -1 lower
+  const s = new THREE.Shape();
+  const tipY = -0.045 * sign;
+  s.moveTo(-0.75, tipY);
+  s.bezierCurveTo(-0.30, 0.46 * sign, 0.30, 0.46 * sign, 0.75, tipY);  // outer edge
+  s.bezierCurveTo(0.28, 0.30 * sign, -0.28, 0.30 * sign, -0.75, tipY); // inner edge
+  return s;
+}
+emblem.add(extrude(lidShape(+1), 0.045, 0.014, 0.006, +0.016));
+emblem.add(extrude(lidShape(-1), 0.045, 0.014, 0.006, -0.016));
+
+// --- 3. Star: two full-length needle blades (vertical + horizontal) with
+//        concave edges and small swept-back barbs near each tip. A fat
+//        bevel on a thin extrusion gives the ridged, knife-like section. ---
+function bladeShape(len) {
+  // right-side profile from top tip (0,1) down to the waist (0.05,0),
+  // as [ctrlX, ctrlY, endX, endY] quadratic segments
+  const prof = [
+    [0.004, 0.88,  0.016, 0.70 ],   // long slim needle
+    [0.024, 0.66,  0.072, 0.612],   // barb: small flick down-and-out, tip kissing the ring
+    [0.038, 0.588, 0.018, 0.585],   // barb back in to the needle
+    [0.026, 0.45,  0.038, 0.32 ],   // widening toward the center...
+    [0.052, 0.16,  0.068, 0.0  ],   // ...into a broad base hidden by the egg
+  ];
+  // start points of each segment (= previous end), for mirrored reversal
+  const starts = [[0, 1]];
+  for (let i = 0; i < prof.length - 1; i++) starts.push([prof[i][2], prof[i][3]]);
+
+  const s = new THREE.Shape();
+  s.moveTo(0, len);
+  const q = (cx, cy, x, y) => s.quadraticCurveTo(cx * len, cy * len, x * len, y * len);
+  for (const [cx, cy, x, y] of prof) q(cx, cy, x, y);                       // tip → waist (right)
+  for (let i = prof.length - 1; i >= 0; i--)                                // waist → bottom tip
+    q(prof[i][0], -prof[i][1], starts[i][0], -starts[i][1]);
+  for (const [cx, cy, x, y] of prof) q(-cx, -cy, -x, -y);                   // bottom tip → left waist
+  for (let i = prof.length - 1; i >= 0; i--)                                // left waist → top tip
+    q(-prof[i][0], prof[i][1], -starts[i][0], starts[i][1]);
+  return s;
+}
+const bladeV = extrude(bladeShape(1.0), 0.018, 0.024, 0.010, +0.052);
+const bladeH = extrude(bladeShape(0.98), 0.018, 0.024, 0.010, +0.056); // tiny z offset avoids z-fighting at the crossing
+bladeH.rotation.z = Math.PI / 2;
+emblem.add(bladeV, bladeH);
+
+// --- 4. Ring, outer r 0.625 / inner 0.545, in six pieces:
+//        four quadrant arcs, square-cut near N/S and tapering to crescent
+//        points near E/W (where the lid tips thread through), plus two short
+//        bridge segments passing directly behind the N and S spikes,
+//        with ~4° gaps on either side of them ---
+const ROUT = 0.62, RIN = 0.556;
+const D = THREE.MathUtils.degToRad;
+
+function quadArcShape(aSquare, aPoint) { // tapers to a point at aPoint
+  const N = 40, pts = [];
+  for (let i = 0; i <= N; i++) {
+    const th = aSquare + (aPoint - aSquare) * i / N;
+    pts.push(new THREE.Vector2(Math.cos(th) * ROUT, Math.sin(th) * ROUT));
+  }
+  for (let i = N; i >= 0; i--) {
+    const t = i / N;
+    const th = aSquare + (aPoint - aSquare) * t;
+    const k = THREE.MathUtils.smoothstep(t, 0.72, 1.0);
+    const r = RIN + (ROUT - RIN) * 0.985 * k;
+    pts.push(new THREE.Vector2(Math.cos(th) * r, Math.sin(th) * r));
+  }
+  return new THREE.Shape(pts);
+}
+function bridgeShape(a1, a2) {
+  const s = new THREE.Shape();
+  s.absarc(0, 0, ROUT, a1, a2, false);
+  s.absarc(0, 0, RIN, a2, a1, true);
+  return s;
+}
+// quadrant arcs: [square end, pointed end]
+emblem.add(extrude(quadArcShape(D(76),  D(4)),   0.05, 0.012, 0.005, 0));  // top-right
+emblem.add(extrude(quadArcShape(D(104), D(176)), 0.05, 0.012, 0.005, 0));  // top-left
+emblem.add(extrude(quadArcShape(D(256), D(184)), 0.05, 0.012, 0.005, 0));  // bottom-left
+emblem.add(extrude(quadArcShape(D(284), D(356)), 0.05, 0.012, 0.005, 0));  // bottom-right
+// bridges behind the vertical spikes
+emblem.add(extrude(bridgeShape(D(80),  D(100)), 0.05, 0.012, 0.005, 0));
+emblem.add(extrude(bridgeShape(D(260), D(280)), 0.05, 0.012, 0.005, 0));
+
+scene.add(emblem);
+
+// --- Floor: dark satin surface fading into the fog, with a painted soft
+//        contact-shadow blob (softer and cheaper than real-time shadows) ---
+const floor = new THREE.Mesh(
+  new THREE.CircleGeometry(7, 48),
+  new THREE.MeshStandardMaterial({ color: 0x0c1424, roughness: 0.85, metalness: 0.2, envMap: envMap, envMapIntensity: 0.25 })
+);
+floor.rotation.x = -Math.PI / 2;
+floor.position.y = -1.04;
+scene.add(floor);
+
+const shCanvas = document.createElement('canvas');
+shCanvas.width = shCanvas.height = 256;
+const sctx = shCanvas.getContext('2d');
+const sg = sctx.createRadialGradient(128, 128, 8, 128, 128, 124);
+sg.addColorStop(0, 'rgba(0,0,0,0.5)');
+sg.addColorStop(0.5, 'rgba(0,0,0,0.22)');
+sg.addColorStop(1, 'rgba(0,0,0,0)');
+sctx.fillStyle = sg;
+sctx.fillRect(0, 0, 256, 256);
+const blob = new THREE.Mesh(
+  new THREE.PlaneGeometry(2.6, 1.3),
+  new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(shCanvas), transparent: true, depthWrite: false })
+);
+blob.rotation.x = -Math.PI / 2;
+blob.position.y = -1.035;
+scene.add(blob);
+
+// --- Resize + render loop ---
+function resize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize);
+resize();
+
+(function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+})();
+</script>
+</body>
+</html>
