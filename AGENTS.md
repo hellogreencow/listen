@@ -430,6 +430,13 @@ Glass chat panel grows out of the icon.
   UI and guide the user to remove the older row and add `Bundle.main.bundleURL`.
   Poll until macOS trusts the running copy, then dismiss the repair sheet.
 
+- **Modifier hotkeys subscribe only to `.flagsChanged`.** Do not widen their
+  NSEvent monitor mask to ordinary `.keyDown`/`.keyUp`; Listen must not even
+  observe Command-C/V when Right Option is configured. Function-key hotkeys
+  subscribe only to their required key edges. Accessory apps also need the
+  responder-chain Edit menu created in `buildMainMenu()` so Cut/Copy/Paste and
+  Select All work whenever one of Listen's own windows is active.
+
 ## First-launch setup
 
 - **An incomplete setup must open a real window on launch.** Do not regress to

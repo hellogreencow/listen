@@ -73,14 +73,19 @@ final class Hotkey {
             self.keyName = "alt_r"
         }
 
-        let mask: NSEvent.EventTypeMask = [.flagsChanged, .keyDown, .keyUp]
+        // Modifier hotkeys only need flagsChanged. Do not subscribe to every
+        // ordinary keyDown/keyUp (including Command-C/V) when they cannot
+        // possibly trigger Listen. Function-key hotkeys need their edges.
+        let mask: NSEvent.EventTypeMask = Hotkey.modifierMap[self.keyName] != nil
+            ? [.flagsChanged]
+            : [.keyDown, .keyUp]
         let handler: (NSEvent) -> Void = { [weak self] event in self?.handle(event) }
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: handler)
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { event in
             handler(event)
             return event
         }
-        NSLog("[Listen] hotkey active: \(keyName)")
+        NSLog("[Listen] hotkey active: \(keyName) events=\(Hotkey.modifierMap[self.keyName] != nil ? "modifiers-only" : "function-keys-only")")
     }
 
     func stop() {

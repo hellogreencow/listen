@@ -77,6 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         listenLog("startup version=\(version)")
         listenLog("speech authorization=\(SFSpeechRecognizer.authorizationStatus().rawValue)")
         NSApp.setActivationPolicy(.accessory)
+        buildMainMenu()
         buildStatusItem()
         reloadProviders()
         speaker.configure(settings)
@@ -95,6 +96,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !SetupCompletion.isComplete {
             DispatchQueue.main.async { [weak self] in self?.showSetup() }
         }
+    }
+
+    /// Accessory apps do not receive a standard Edit menu from a storyboard.
+    /// Without these responder-chain commands, Command-C/V appears dead while
+    /// Setup, Preferences, Notes, or Quick Chat owns the key window.
+    private func buildMainMenu() {
+        let mainMenu = NSMenu()
+
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "Quit Listen", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+        mainMenu.addItem(appItem)
+
+        let editItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(NSMenuItem.separator())
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = editMenu
+        mainMenu.addItem(editItem)
+
+        NSApp.mainMenu = mainMenu
     }
 
     func applicationWillTerminate(_ notification: Notification) {
