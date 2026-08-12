@@ -136,6 +136,11 @@ Configuration is field-by-field backward compatible with the original
 Spoken replies use xAI TTS voice `o79hvd0m`, matching the retired voice daemon;
 interruptible system speech remains the automatic offline/error fallback.
 
+Clicking the menu-bar label opens Quick Chat. Its optional Hermes mode uses a
+locally installed Hermes Agent through the public `hermes --oneshot` CLI (or
+the versioned local adapter), retaining that Hermes setup's configured model,
+identity, and memory. It does not connect to Hermes Gateway WebSockets.
+
 Conversation reports can optionally use Hermes for deeper analysis. Listen
 invokes the documented `hermes --oneshot` CLI with an empty toolset; it does not
 import Hermes's private Python packages or assume a checkout under `~/.hermes`.

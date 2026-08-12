@@ -40,6 +40,7 @@ final class SetupAssistantModel: ObservableObject {
     @Published private(set) var microphoneStatus: AVAuthorizationStatus
     @Published private(set) var speechStatus: SFSpeechRecognizerAuthorizationStatus
     @Published private(set) var accessibilityReady = false
+    @Published var showingAccessibilityRepair = false
     @Published private(set) var automationState: AutomationState = .unchecked
     @Published var testFieldText = ""
     @Published private(set) var testPhase: TestPhase = .idle
@@ -127,6 +128,9 @@ final class SetupAssistantModel: ObservableObject {
         microphoneStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         speechStatus = SFSpeechRecognizer.authorizationStatus()
         accessibilityReady = AXIsProcessTrusted()
+        if accessibilityReady {
+            showingAccessibilityRepair = false
+        }
     }
 
     func requestMicrophone() {
@@ -149,16 +153,29 @@ final class SetupAssistantModel: ObservableObject {
         }
     }
 
-    func requestAccessibility() {
+    func showAccessibilityRepair() {
+        showingAccessibilityRepair = true
+    }
+
+    func openAccessibilitySettings() {
         let prompt = "AXTrustedCheckOptionPrompt" as CFString
         _ = AXIsProcessTrustedWithOptions([prompt: true] as CFDictionary)
+        _ = CGRequestPostEventAccess()
         openPrivacyPane("Privacy_Accessibility")
+    }
+
+    func revealCurrentApp() {
+        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
+    }
+
+    var currentAppPath: String {
+        Bundle.main.bundleURL.path
     }
 
     func requestAutomation() {
         guard accessibilityReady else {
             automationState = .blocked("Allow Accessibility first.")
-            requestAccessibility()
+            showAccessibilityRepair()
             return
         }
         automationState = .checking
@@ -168,7 +185,7 @@ final class SetupAssistantModel: ObservableObject {
             automationState = .ready
         case .accessibilityDenied:
             automationState = .blocked(outcome.message)
-            requestAccessibility()
+            showAccessibilityRepair()
         case .automationDenied:
             automationState = .blocked(outcome.message)
             openPrivacyPane("Privacy_Automation")
@@ -277,6 +294,9 @@ struct SetupAssistantView: View {
         }
         .frame(width: 780, height: 590)
         .background(Color(nsColor: .windowBackgroundColor))
+        .sheet(isPresented: $model.showingAccessibilityRepair) {
+            AccessibilityRepairView(model: model)
+        }
         .onChange(of: model.testPhase) { phase in
             if phase == .recording || phase == .pasting { testFieldFocused = true }
         }
@@ -469,10 +489,12 @@ struct SetupAssistantView: View {
             }
             PermissionRow(
                 title: "Accessibility",
-                detail: "Detects your hold shortcut and permits paste keystrokes.",
+                detail: model.accessibilityReady
+                    ? "Detects your hold shortcut and permits paste keystrokes."
+                    : "Approves this exact copy. An older enabled Listen entry does not count.",
                 ready: model.accessibilityReady,
-                button: "Open Settings",
-                action: model.requestAccessibility
+                button: "Fix Access",
+                action: model.showAccessibilityRepair
             )
             PermissionRow(
                 title: "Automation",
@@ -636,5 +658,60 @@ private struct PermissionRow: View {
         .padding(13)
         .background(Color.secondary.opacity(0.07))
         .clipShape(RoundedRectangle(cornerRadius: 11))
+    }
+}
+
+private struct AccessibilityRepairView: View {
+    @ObservedObject var model: SetupAssistantModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            Label("Approve this copy of Listen", systemImage: "checkmark.shield")
+                .font(.system(size: 23, weight: .semibold, design: .rounded))
+
+            Text("If Accessibility already shows Listen as enabled, macOS is holding an approval for an older signed build. Replace that row with the Apple-notarized copy you are running now.")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 12) {
+                repairStep(1, "Select the old Listen row and press the minus button.")
+                repairStep(2, "Press the plus button and choose the Listen shown below.")
+                repairStep(3, "Turn Listen on. This window closes automatically when macOS approves it.")
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text("CURRENT COPY").font(.caption2).fontWeight(.semibold).foregroundStyle(.secondary)
+                Text(model.currentAppPath)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .lineLimit(2)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.secondary.opacity(0.07))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+
+            HStack(spacing: 10) {
+                Button("Show This Listen in Finder") { model.revealCurrentApp() }
+                    .buttonStyle(.bordered)
+                Spacer()
+                Button("Open Accessibility") { model.openAccessibilitySettings() }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(28)
+        .frame(width: 540)
+    }
+
+    private func repairStep(_ number: Int, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 11) {
+            Text("\(number)")
+                .font(.caption).fontWeight(.bold)
+                .foregroundStyle(.white)
+                .frame(width: 22, height: 22)
+                .background(Color.accentColor)
+                .clipShape(Circle())
+            Text(text).fixedSize(horizontal: false, vertical: true)
+        }
     }
 }

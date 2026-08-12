@@ -423,6 +423,13 @@ Glass chat panel grows out of the icon.
   lint, signing verification, and real signed-app mic teardown checks before
   replacing `/Applications/Listen.app`.
 
+- **A green Accessibility row can still belong to an older signing identity.**
+  `AXIsProcessTrusted()` is the runtime truth. Never mark setup ready merely
+  because a same-named row is visible in System Settings, and never reset TCC.
+  If the current process is untrusted, explain the stale-row case in the setup
+  UI and guide the user to remove the older row and add `Bundle.main.bundleURL`.
+  Poll until macOS trusts the running copy, then dismiss the repair sheet.
+
 ## First-launch setup
 
 - **An incomplete setup must open a real window on launch.** Do not regress to

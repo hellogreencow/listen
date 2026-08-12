@@ -674,6 +674,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func grantAccessibility() {
         let prompt = "AXTrustedCheckOptionPrompt" as CFString
         _ = AXIsProcessTrustedWithOptions([prompt: true] as CFDictionary)
+        _ = CGRequestPostEventAccess()
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
     }
 
